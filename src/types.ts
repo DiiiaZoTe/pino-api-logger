@@ -6,8 +6,9 @@ export type RequiredLoggerOptions = Required<LoggerOptions>;
 export type LoggerWithArchiverOptions = RequiredLoggerOptions & {
   logger: pino.Logger;
 };
-export type PinoLoggerWithArchiver = pino.Logger<never, boolean> & {
+export type PinoLoggerExtended = pino.Logger<never, boolean> & {
   stopArchiver: () => void;
+  getParams: () => RequiredLoggerOptions;
 };
 
 export type BaseLoggerOptions = {
@@ -34,7 +35,7 @@ export type FileWriterOptions = {
   /** The directory to write the logs to from the root of process execution. */
   logDir?: string;
   /** The interval to flush the log buffer at in milliseconds.
-   * @default 200 (minimum 50 -> 50ms flush interval)
+   * @default 200 (minimum 20 -> 20ms flush interval)
    */
   flushInterval?: number;
   /** The maximum number of log lines to buffer before flushing.

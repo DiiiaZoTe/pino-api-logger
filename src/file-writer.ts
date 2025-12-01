@@ -124,6 +124,35 @@ export class FileWriter {
     this.flushTimer.unref?.();
   }
 
+  /**
+   * Update options with new configuration if stricter settings are provided.
+   * Used when multiple loggers share the same writer.
+   */
+  updateOptions(opts: Required<FileWriterOptions>) {
+    // Update flush interval to the minimum (fastest)
+    if (opts.flushInterval < this.flushInterval) {
+      this.flushInterval = opts.flushInterval;
+      clearInterval(this.flushTimer);
+      this.flushTimer = setInterval(() => this.flushIfNeeded(), this.flushInterval);
+      this.flushTimer.unref?.();
+    }
+
+    // Update buffer limits to the minimum (safest)
+    if (opts.maxBufferLines < this.maxBufferLines) {
+      this.maxBufferLines = opts.maxBufferLines;
+    }
+    if (opts.maxBufferKilobytes < this.maxBufferKilobytes) {
+      this.maxBufferKilobytes = opts.maxBufferKilobytes;
+      this.maxBufferBytes = this.maxBufferKilobytes * 1024;
+    }
+
+    // Update max file size to the minimum (safest to prevent giant files)
+    if (opts.maxDailyLogSizeMegabytes < this.maxDailyLogSizeMegabytes) {
+      this.maxDailyLogSizeMegabytes = opts.maxDailyLogSizeMegabytes;
+      this.maxDailyLogSizeBytes = this.maxDailyLogSizeMegabytes * 1024 * 1024;
+    }
+  }
+
   // Helper to safely open stream and attach error handler
   private openStream(filepath: string, errorCounter: number = 0) {
     if (!this.isEnabled) return;
@@ -307,5 +336,17 @@ export class FileWriter {
       console.error(`[${DEFAULT_PACKAGE_NAME}] Failed to flush buffer on close`, err);
     }
     this.stream?.end();
+  }
+
+  public getInstanceOptions() {
+    return {
+      logDir: this.logDir,
+      flushInterval: this.flushInterval,
+      maxBufferLines: this.maxBufferLines,
+      maxBufferKilobytes: this.maxBufferKilobytes,
+      maxDailyLogSizeMegabytes: this.maxDailyLogSizeMegabytes,
+      maxBufferBytes: this.maxBufferBytes,
+      maxDailyLogSizeBytes: this.maxDailyLogSizeBytes,
+    };
   }
 }

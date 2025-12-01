@@ -18,7 +18,7 @@ async function fileExists(filePath: string): Promise<boolean> {
 /** Compress and archive the previous month's daily logs */
 export async function runArchiverWorker(options: RequiredLoggerOptions) {
   try {
-    const logger = internalCreateLogger(options).child({ name: "monthly-archiver-worker" });
+    const logger = internalCreateLogger(options).logger.child({ name: "monthly-archiver-worker" });
 
     const { logDir, archiveDir, archiveLogging } = options;
 

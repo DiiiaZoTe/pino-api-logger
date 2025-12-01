@@ -2,7 +2,8 @@ import cron from "node-cron";
 import { DEFAULT_LOGGER_OPTIONS, DEFAULT_PACKAGE_NAME } from "./config";
 import { internalCreateLogger } from "./internal-logger";
 import { startMonthlyArchiver } from "./monthly-archiver";
-import type { LoggerOptions, PinoLoggerWithArchiver } from "./types";
+import { getOrCreateArchiver } from "./registry";
+import type { LoggerOptions, PinoLoggerExtended } from "./types";
 
 export { startMonthlyArchiver };
 
@@ -14,13 +15,21 @@ export { startMonthlyArchiver };
  */
 export function createLogger(loggerOptions: LoggerOptions = {}) {
   const options = validateLoggerOptions(loggerOptions);
-  const logger = internalCreateLogger(options);
-  const stopArchiver = startMonthlyArchiver({
+  const {logger, getParams} = internalCreateLogger(options);
+
+  // Use registry to ensure singleton archiver per directory
+  const stopArchiver = getOrCreateArchiver({
     ...options,
     logger: logger.child({ name: "monthly-archiver" }),
   });
-  (logger as PinoLoggerWithArchiver).stopArchiver = stopArchiver;
-  return logger as PinoLoggerWithArchiver;
+
+  (logger as PinoLoggerExtended).getParams = () => ({
+    ...options,
+    ...getParams()
+  }) ;
+  (logger as PinoLoggerExtended).stopArchiver = stopArchiver;
+
+  return logger as PinoLoggerExtended;
 }
 
 /** Validate the logger options and add default values if not provided */
@@ -40,9 +49,9 @@ function validateLoggerOptions(options: LoggerOptions) {
     options.maxDailyLogSizeMegabytes = 1;
   }
 
-  if (options.flushInterval && options.flushInterval < 50) {
-    console.warn(`[${DEFAULT_PACKAGE_NAME}] Flush interval is less than 50ms, setting to 50ms`);
-    options.flushInterval = 50;
+  if (options.flushInterval && options.flushInterval < 20) {
+    console.warn(`[${DEFAULT_PACKAGE_NAME}] Flush interval is less than 20ms, setting to 20ms`);
+    options.flushInterval = 20;
   }
 
   if (options.archiveCron && !cron.validate(options.archiveCron)) {

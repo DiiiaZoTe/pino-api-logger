@@ -1,5 +1,5 @@
 import pino from "pino";
-import { FileWriter } from "./file-writer";
+import { getOrCreateFileWriter } from "./registry";
 import type { BaseLoggerOptions, FileWriterOptions } from "./types";
 
 /** Internal function to create a logger */
@@ -14,7 +14,8 @@ export function internalCreateLogger({
   maxDailyLogSizeMegabytes,
 }: Required<BaseLoggerOptions & FileWriterOptions>) {
   // daily rotating file writer (object with write)
-  const fileWriter = new FileWriter({
+  // Use registry to ensure singleton writer per directory
+  const fileWriter = getOrCreateFileWriter({
     logDir,
     flushInterval,
     maxBufferLines,
@@ -62,5 +63,8 @@ export function internalCreateLogger({
     pino.multistream(streams),
   );
 
-  return logger;
+  return {
+    logger,
+    getParams: () => fileWriter.getInstanceOptions(),
+  };
 }

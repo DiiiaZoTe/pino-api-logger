@@ -24,7 +24,8 @@ describe("Logger Package", () => {
   });
 
   it("should write log lines to a daily file + test min flush interval", async () => {
-    const logger = createLogger({ logDir: TEST_LOG_DIR, flushInterval: 20, runArchiveOnCreation: false });
+    const logger = createLogger({ logDir: TEST_LOG_DIR, flushInterval: 10, runArchiveOnCreation: false });
+    console.log("test 1", logger.getParams());
     logger.info("Test log line");
 
     // wait a short moment for the buffer to flush
@@ -42,6 +43,7 @@ describe("Logger Package", () => {
 
   it("should flush immediately when buffer is full", async () => {
     const logger = createLogger({ logDir: TEST_LOG_DIR, maxBufferLines: 1, runArchiveOnCreation: false });
+    console.log("test 2", logger.getParams());
     logger.info("Line 1");
     logger.info("Line 2");
 
@@ -54,6 +56,7 @@ describe("Logger Package", () => {
 
   it("should flush when buffer is full by disk size", async () => {
     const logger = createLogger({ logDir: TEST_LOG_DIR, maxBufferKilobytes: 1, flushInterval: 300, runArchiveOnCreation: false });
+    console.log("test 3", logger.getParams());
     logger.info("a".repeat(750));
     logger.info("b".repeat(750));
     // should flush buffer here because the buffer is full by disk size
@@ -72,6 +75,7 @@ describe("Logger Package", () => {
   it("should work with child loggers", async () => {
     const logger = createLogger({ logDir: TEST_LOG_DIR, maxBufferLines: 1, runArchiveOnCreation: false });
     const child = logger.child({ request: "child-test" });
+    console.log("test 4", logger.getParams());
     child.info("child log line");
     child.error({ test: "child-error-test" });
 
