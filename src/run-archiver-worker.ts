@@ -18,7 +18,13 @@ async function fileExists(filePath: string): Promise<boolean> {
 /** Compress and archive the previous month's daily logs */
 export async function runArchiverWorker(options: RequiredLoggerOptions) {
   try {
-    const logger = internalCreateLogger(options).logger.child({ name: "monthly-archiver-worker" });
+    const { logger, close } = internalCreateLogger({
+      ...options,
+      pinoOptions: {
+        ...options.pinoOptions,
+        name: "monthly-archiver-worker",
+      }
+    });
 
     const { logDir, archiveDir, archiveLogging } = options;
 
@@ -82,6 +88,9 @@ export async function runArchiverWorker(options: RequiredLoggerOptions) {
       }
     } catch (err) {
       logger.error({ err }, "Error while archiving logs");
+    } finally {
+      // Always close the logger to flush any remaining buffered logs
+      await close();
     }
   } catch (err) {
     console.error("Error while running archiver worker", err);
