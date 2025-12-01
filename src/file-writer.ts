@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { FileWriterOptions } from "./types";
 import { DEFAULT_PACKAGE_NAME } from "./config";
+import type { FileWriterOptions } from "./types";
 
 type WriterState = "Idle" | "Flushing" | "Rotating" | "FlushingAndRotating";
 
@@ -165,7 +165,9 @@ export class FileWriter {
       if (errorCounter < 3) {
         setTimeout(() => this.openStream(filepath, errorCounter + 1), 1000);
       } else {
-        console.error(`[${DEFAULT_PACKAGE_NAME}] Failed to open stream after 3 attempts, disabling logging for ${filepath}`);
+        console.error(
+          `[${DEFAULT_PACKAGE_NAME}] Failed to open stream after 3 attempts, disabling logging for ${filepath}`,
+        );
         this.isEnabled = false;
         this.stream = undefined;
       }
@@ -328,7 +330,7 @@ export class FileWriter {
   }
 
   /** Clean shutdown */
-  async close() {
+  public async close() {
     clearInterval(this.flushTimer);
     try {
       await this.flushBuffer();

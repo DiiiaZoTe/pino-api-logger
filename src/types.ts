@@ -1,14 +1,20 @@
 import type pino from "pino";
 import type { PrettyOptions } from "pino-pretty";
 
+/** Pino options that can be customized by the user (transport is managed internally) */
+export type CustomPinoOptions = Omit<pino.LoggerOptions, "transport">;
+
 export type LoggerOptions = BaseLoggerOptions & FileWriterOptions & MonthlyArchiverOptions;
-export type RequiredLoggerOptions = Required<LoggerOptions>;
+/** pinoOptions remains optional as it's user-provided overrides */
+export type RequiredLoggerOptions = Required<Omit<LoggerOptions, "pinoOptions">> &
+  Pick<LoggerOptions, "pinoOptions">;
 export type LoggerWithArchiverOptions = RequiredLoggerOptions & {
   logger: pino.Logger;
 };
 export type PinoLoggerExtended = pino.Logger<never, boolean> & {
   stopArchiver: () => void;
   getParams: () => RequiredLoggerOptions;
+  close: () => Promise<void>;
 };
 
 export type BaseLoggerOptions = {
@@ -29,6 +35,22 @@ export type BaseLoggerOptions = {
    * @default true
    */
   toConsole?: boolean;
+  /**
+   * Custom pino options to override/extend the default configuration.
+   * Transport is managed internally and cannot be overridden.
+   * Options like `level`, `base`, `timestamp`, `formatters` can be customized here.
+   * Note: If both `level` and `pinoOptions.level` are provided, `pinoOptions.level` takes precedence.
+   * @default undefined (uses sensible defaults)
+   * @example
+   * ```ts
+   * pinoOptions: {
+   *   base: { service: 'my-api' },
+   *   messageKey: 'message',
+   *   customLevels: { http: 35 },
+   * }
+   * ```
+   */
+  pinoOptions?: CustomPinoOptions;
 };
 
 export type FileWriterOptions = {

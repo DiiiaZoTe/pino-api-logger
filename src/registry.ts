@@ -1,11 +1,7 @@
 import { DEFAULT_PACKAGE_NAME } from "./config";
 import { FileWriter } from "./file-writer";
 import { startMonthlyArchiver } from "./monthly-archiver";
-import type {
-  FileWriterOptions,
-  LoggerWithArchiverOptions,
-  MonthlyArchiverOptions,
-} from "./types";
+import type { FileWriterOptions, LoggerWithArchiverOptions, MonthlyArchiverOptions } from "./types";
 
 /**
  * Registry to ensure we only have one FileWriter per log directory.
@@ -24,9 +20,7 @@ const archiverRegistry = new Map<string, { stop: () => void; options: MonthlyArc
  * Get an existing FileWriter for the given log directory, or create a new one.
  * If a writer already exists, the options will be merged (taking the strictest/minimum values).
  */
-export function getOrCreateFileWriter(
-  opts: Required<FileWriterOptions>,
-): FileWriter {
+export function getOrCreateFileWriter(opts: Required<FileWriterOptions>): FileWriter {
   const key = opts.logDir;
   const existing = writerRegistry.get(key);
 
@@ -45,9 +39,7 @@ export function getOrCreateFileWriter(
  * Get or create a MonthlyArchiver for the given log directory.
  * Enforces strict conflict resolution: throws if trying to register a different config for the same directory.
  */
-export function getOrCreateArchiver(
-  opts: LoggerWithArchiverOptions,
-): () => void {
+export function getOrCreateArchiver(opts: LoggerWithArchiverOptions): () => void {
   const key = opts.logDir;
   const existing = archiverRegistry.get(key);
 
@@ -59,9 +51,7 @@ export function getOrCreateArchiver(
     ) {
       throw new Error(
         `[${DEFAULT_PACKAGE_NAME}] Cannot create multiple archivers for logDir "${key}" with conflicting options. ` +
-          `Existing: ${JSON.stringify(existing.options)}, Requested: ${JSON.stringify(
-            opts,
-          )}`,
+          `Existing: ${JSON.stringify(existing.options)}, Requested: ${JSON.stringify(opts)}`,
       );
     }
     // Return the existing stop function
@@ -74,3 +64,18 @@ export function getOrCreateArchiver(
   return stop;
 }
 
+/**
+ * Reset the log registry by closing all writers and stopping all archivers.
+ * Useful for testing to ensure a clean state between tests.
+ */
+export function resetLogRegistry() {
+  for (const writer of writerRegistry.values()) {
+    writer.close();
+  }
+  writerRegistry.clear();
+
+  for (const archiver of archiverRegistry.values()) {
+    archiver.stop();
+  }
+  archiverRegistry.clear();
+}

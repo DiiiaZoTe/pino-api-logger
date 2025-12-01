@@ -1,49 +1,59 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { createLogger } from "../src/index";
-import { describe, it, expect } from "bun:test";
+import { createLogger, resetLogRegistry } from "../src/index";
+import { describe, it, expect, afterEach } from "bun:test";
 
-const TEST_LOG_DIR = "./logs-test";
-const TEST_ARCHIVE_DIR = "archives-test";
+const TEST_LOG_BASE_DIR = "./logs-test";
+const TEST_ARCHIVE_DIR = "archives";
 
 const todayDate = new Date().toISOString().slice(0, 10);
 const todayFile = `${todayDate}.log`;
-const todayFilePath = path.join(TEST_LOG_DIR, todayFile);
+
+// Helper to get log dir for a specific test
+const getTestLogDir = (testNum: string) => path.join(TEST_LOG_BASE_DIR, `test-${testNum}`);
+const getTodayFilePath = (testNum: string) => path.join(getTestLogDir(testNum), todayFile);
 
 try {
   console.log("Removing test log directory if it exists...");
-  await fs.rm(TEST_LOG_DIR, { recursive: true });
+  await fs.rm(TEST_LOG_BASE_DIR, { recursive: true });
 } catch { }
 
 describe("Logger Package", () => {
-  // remove test log directory
-  it("should create a logger instance", () => {
-    const logger = createLogger({ logDir: TEST_LOG_DIR, runArchiveOnCreation: false });
+  // Reset registry after each test to ensure isolation
+  afterEach(() => {
+    resetLogRegistry();
+  });
+
+  it("01 - should create a logger instance", () => {
+    const logDir = getTestLogDir("01");
+    const logger = createLogger({ logDir, runArchiveOnCreation: false });
     expect(typeof logger.info).toBe("function");
     expect(typeof logger.error).toBe("function");
   });
 
-  it("should write log lines to a daily file + test min flush interval", async () => {
-    const logger = createLogger({ logDir: TEST_LOG_DIR, flushInterval: 10, runArchiveOnCreation: false });
-    console.log("test 1", logger.getParams());
+  it("02 - should write log lines to a daily file + test min flush interval", async () => {
+    const logDir = getTestLogDir("02");
+    const todayFilePath = getTodayFilePath("02");
+    const logger = createLogger({ logDir, flushInterval: 10, runArchiveOnCreation: false });
     logger.info("Test log line");
 
     // wait a short moment for the buffer to flush
     await new Promise((resolve) => setTimeout(resolve, 200));
 
-    const files = await fs.readdir(TEST_LOG_DIR);
+    const files = await fs.readdir(logDir);
     expect(files.length).toBeGreaterThan(0);
 
-    const todayFile = files.find(f => f.endsWith(".log"));
-    expect(todayFile).toBeDefined();
+    const logFile = files.find(f => f.endsWith(".log"));
+    expect(logFile).toBeDefined();
 
     const content = await fs.readFile(todayFilePath, "utf-8");
     expect(content).toContain("Test log line");
   });
 
-  it("should flush immediately when buffer is full", async () => {
-    const logger = createLogger({ logDir: TEST_LOG_DIR, maxBufferLines: 1, runArchiveOnCreation: false });
-    console.log("test 2", logger.getParams());
+  it("03 - should flush immediately when buffer is full", async () => {
+    const logDir = getTestLogDir("03");
+    const todayFilePath = getTodayFilePath("03");
+    const logger = createLogger({ logDir, maxBufferLines: 1, runArchiveOnCreation: false });
     logger.info("Line 1");
     logger.info("Line 2");
 
@@ -54,9 +64,10 @@ describe("Logger Package", () => {
     expect(content).toContain("Line 2");
   });
 
-  it("should flush when buffer is full by disk size", async () => {
-    const logger = createLogger({ logDir: TEST_LOG_DIR, maxBufferKilobytes: 1, flushInterval: 300, runArchiveOnCreation: false });
-    console.log("test 3", logger.getParams());
+  it("04 - should flush when buffer is full by disk size", async () => {
+    const logDir = getTestLogDir("04");
+    const todayFilePath = getTodayFilePath("04");
+    const logger = createLogger({ logDir, maxBufferKilobytes: 1, flushInterval: 300, runArchiveOnCreation: false });
     logger.info("a".repeat(750));
     logger.info("b".repeat(750));
     // should flush buffer here because the buffer is full by disk size
@@ -72,10 +83,11 @@ describe("Logger Package", () => {
     expect(content).not.toContain("c".repeat(200));
   });
 
-  it("should work with child loggers", async () => {
-    const logger = createLogger({ logDir: TEST_LOG_DIR, maxBufferLines: 1, runArchiveOnCreation: false });
+  it("05 - should work with child loggers", async () => {
+    const logDir = getTestLogDir("05");
+    const todayFilePath = getTodayFilePath("05");
+    const logger = createLogger({ logDir, maxBufferLines: 1, runArchiveOnCreation: false });
     const child = logger.child({ request: "child-test" });
-    console.log("test 4", logger.getParams());
     child.info("child log line");
     child.error({ test: "child-error-test" });
 
@@ -87,14 +99,14 @@ describe("Logger Package", () => {
     expect(content).toContain("child-error-test");
   });
 
-  it("should archive logs monthly", async () => {
-    const previousMonthDate = await createCopyOfTodayFileMinusXDays();
-    // create the logger instance, it whould archive the previous month file
-    const _logger = createLogger({ logDir: TEST_LOG_DIR, archiveDir: TEST_ARCHIVE_DIR, archiveLogging: true });
+  it("06 - should archive logs monthly", async () => {
+    const logDir = getTestLogDir("06");
+    const previousMonthDate = await createCopyOfTodayFileMinusXDays(logDir, 31);
+    // create the logger instance, it should archive the previous month file
+    const _logger = createLogger({ logDir, archiveDir: TEST_ARCHIVE_DIR, archiveLogging: true });
     // wait for the archive to happen (1 second lets say)
     await new Promise((resolve) => setTimeout(resolve, 1000));
-    const filesAfterArchive = await fs.readdir(TEST_LOG_DIR);
-    console.log("filesAfterArchive", filesAfterArchive);
+    const filesAfterArchive = await fs.readdir(logDir);
 
     // we should have 1 log file and 1 archive folder with the archive file
     expect(filesAfterArchive.length).toBe(2);
@@ -102,45 +114,144 @@ describe("Logger Package", () => {
     // the archive folder should have the archive file
     const archiveFolder = filesAfterArchive.find(f => f.startsWith(TEST_ARCHIVE_DIR));
     expect(archiveFolder).toBeDefined();
-    const archiveFiles = await fs.readdir(path.join(TEST_LOG_DIR, TEST_ARCHIVE_DIR));
+    const archiveFiles = await fs.readdir(path.join(logDir, TEST_ARCHIVE_DIR));
     // the archive folder should contain one archive file
     expect(archiveFiles.length).toBe(1);
     const archiveFile = archiveFiles[0];
     expect(archiveFile).toBeDefined();
     expect(archiveFile.startsWith(previousMonthDate.slice(0, 7))).toBe(true);
     expect(archiveFile.endsWith(".tar.gz")).toBe(true);
-  })
+  });
 
-  it("should schedule the next archive run", async () => {
-    const previousMonthDate = await createCopyOfTodayFileMinusXDays(62);
-    const _logger = createLogger({ logDir: TEST_LOG_DIR, runArchiveOnCreation: false, archiveCron: '*/2 * * * * *', archiveDir: TEST_ARCHIVE_DIR, archiveLogging: true });
+  it("07 - should schedule the next archive run", async () => {
+    const logDir = getTestLogDir("07");
+    // First create a log file for today so we have something to copy
+    const logger1 = createLogger({ logDir, runArchiveOnCreation: false });
+    logger1.info("Initial log line");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await resetLogRegistry();
+
+    const previousMonthDate = await createCopyOfTodayFileMinusXDays(logDir, 62);
+    const _logger = createLogger({ logDir, runArchiveOnCreation: false, archiveCron: '*/2 * * * * *', archiveDir: TEST_ARCHIVE_DIR, archiveLogging: true });
+
+    // Ensure archive dir exists for checking
+    try {
+      await fs.mkdir(path.join(logDir, TEST_ARCHIVE_DIR), { recursive: true });
+    } catch { }
+
     // check that the archive file is not yet created (waiting for the interval to pass)
-    const archiveFilesBefore = await fs.readdir(path.join(TEST_LOG_DIR, TEST_ARCHIVE_DIR));
+    const archiveFilesBefore = await fs.readdir(path.join(logDir, TEST_ARCHIVE_DIR));
     // we shouldn't find the archive for previousMonthDate
     expect(archiveFilesBefore.find(f => f.startsWith(previousMonthDate.slice(0, 7)))).toBeUndefined();
     await new Promise((resolve) => setTimeout(resolve, 3500));
-    const archiveFilesAfter = await fs.readdir(path.join(TEST_LOG_DIR, TEST_ARCHIVE_DIR));
+    const archiveFilesAfter = await fs.readdir(path.join(logDir, TEST_ARCHIVE_DIR));
     // we should find the archive for previousMonthDate
     expect(archiveFilesAfter.find(f => f.startsWith(previousMonthDate.slice(0, 7)))).toBeDefined();
-    // we should have 2 archive files now
-    expect(archiveFilesAfter.length).toBe(2);
-  })
+    // we should have 1 archive file now
+    expect(archiveFilesAfter.length).toBe(1);
+  });
+
+  it("08 - should support custom pino options", async () => {
+    const logDir = getTestLogDir("08");
+    const todayFilePath = getTodayFilePath("08");
+    const logger = createLogger({
+      logDir,
+      maxBufferLines: 1,
+      runArchiveOnCreation: false,
+      pinoOptions: {
+        // Custom base adds service info to every log
+        base: { service: "test-api", version: "1.0.0" },
+        // Use 'message' instead of 'msg' as the message key
+        messageKey: "message",
+        // Custom level formatter (uppercase)
+        formatters: {
+          level: (label) => ({ severity: label.toUpperCase() }),
+        },
+      },
+    });
+
+    logger.info("Custom pino options test");
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const content = await fs.readFile(todayFilePath, "utf-8");
+    // Find the line with our test message (not the archiver log)
+    const lines = content.trim().split("\n").map(line => JSON.parse(line));
+    const logLine = lines.find(l => l.message === "Custom pino options test");
+
+    expect(logLine).toBeDefined();
+    // Check custom base properties are present
+    expect(logLine.service).toBe("test-api");
+    expect(logLine.version).toBe("1.0.0");
+    // Check custom messageKey is used
+    expect(logLine.message).toBe("Custom pino options test");
+    expect(logLine.msg).toBeUndefined();
+    // Check custom level formatter is applied
+    expect(logLine.severity).toBe("INFO");
+    expect(logLine.level).toBeUndefined();
+  });
+
+  it("09 - should merge pinoOptions formatters with defaults", async () => {
+    const logDir = getTestLogDir("09");
+    const todayFilePath = getTodayFilePath("09");
+    // Only override level formatter, log formatter should use default (msg last)
+    const logger = createLogger({
+      logDir,
+      maxBufferLines: 1,
+      runArchiveOnCreation: false,
+      pinoOptions: {
+        formatters: {
+          level: (label) => ({ lvl: label }),
+        },
+      },
+    });
+
+    logger.info({ data: "test-data" }, "Formatter merge test");
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const content = await fs.readFile(todayFilePath, "utf-8");
+    // Find the line with our test message (not the archiver log)
+    const lines = content.trim().split("\n").map(line => JSON.parse(line));
+    const logLine = lines.find(l => l.msg === "Formatter merge test");
+
+    expect(logLine).toBeDefined();
+    // Custom level formatter applied
+    expect(logLine.lvl).toBe("info");
+    // Default log formatter should still put msg last (check key order)
+    const keys = Object.keys(logLine);
+    expect(keys[keys.length - 1]).toBe("msg");
+    expect(logLine.data).toBe("test-data");
+  });
 });
 
-const createCopyOfTodayFileMinusXDays = async (x = 31) => {
-  // start by taking the current date log and changing the date to the previous month
-  const files = await fs.readdir(TEST_LOG_DIR);
-  const todayFile = files.find(f => f.endsWith(".log"));
-  expect(todayFile).toBeDefined()
-  if (!todayFile) return "";
-  const todayDate = todayFile.split(".")[0];
-  // create a new file for the previous month (-31 days)
-  const previousMonthDate = new Date(new Date(todayDate).setDate(new Date(todayDate).getDate() - x)).toISOString().slice(0, 10);
-  // copy the today file to the previous month date
-  await fs.copyFile(path.join(TEST_LOG_DIR, todayFile), path.join(TEST_LOG_DIR, `${previousMonthDate}.log`));
+/**
+ * Helper to create a copy of today's log file with a date X days ago.
+ * Creates a log file for today first if it doesn't exist.
+ */
+const createCopyOfTodayFileMinusXDays = async (logDir: string, x = 31) => {
+  // Ensure directory exists
+  await fs.mkdir(logDir, { recursive: true });
 
-  const filesAfter = await fs.readdir(TEST_LOG_DIR);
+  // Check if today's file exists, if not create one
+  const files = await fs.readdir(logDir);
+  let sourceFile = files.find(f => f.endsWith(".log"));
+
+  if (!sourceFile) {
+    // Create a minimal log file for today
+    const todayFilePath = path.join(logDir, todayFile);
+    await fs.writeFile(todayFilePath, '{"level":"info","time":"' + new Date().toISOString() + '","msg":"test"}\n');
+    sourceFile = todayFile;
+  }
+
+  const sourceDate = sourceFile.split(".")[0];
+  // create a new file for the previous month (-x days)
+  const previousMonthDate = new Date(new Date(sourceDate).setDate(new Date(sourceDate).getDate() - x)).toISOString().slice(0, 10);
+  // copy the source file to the previous month date
+  await fs.copyFile(path.join(logDir, sourceFile), path.join(logDir, `${previousMonthDate}.log`));
+
+  const filesAfter = await fs.readdir(logDir);
   const previousMonthFile = filesAfter.find(f => f.startsWith(previousMonthDate));
   expect(previousMonthFile).toBeDefined();
   return previousMonthDate;
-}
+};

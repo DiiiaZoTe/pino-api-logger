@@ -2,10 +2,11 @@ import cron from "node-cron";
 import { DEFAULT_LOGGER_OPTIONS, DEFAULT_PACKAGE_NAME } from "./config";
 import { internalCreateLogger } from "./internal-logger";
 import { startMonthlyArchiver } from "./monthly-archiver";
-import { getOrCreateArchiver } from "./registry";
+import { getOrCreateArchiver, getOrCreateFileWriter, resetLogRegistry } from "./registry";
 import type { LoggerOptions, PinoLoggerExtended } from "./types";
 
-export { startMonthlyArchiver };
+export { startMonthlyArchiver, resetLogRegistry, getOrCreateArchiver, getOrCreateFileWriter };
+export type { LoggerOptions, CustomPinoOptions, PinoLoggerExtended } from "./types";
 
 /**
  * Create a pinologger with a monthly archiver. Starts the monthly archiver scheduled task automatically.
@@ -15,7 +16,7 @@ export { startMonthlyArchiver };
  */
 export function createLogger(loggerOptions: LoggerOptions = {}) {
   const options = validateLoggerOptions(loggerOptions);
-  const {logger, getParams} = internalCreateLogger(options);
+  const { logger, getParams, close } = internalCreateLogger(options);
 
   // Use registry to ensure singleton archiver per directory
   const stopArchiver = getOrCreateArchiver({
@@ -25,10 +26,10 @@ export function createLogger(loggerOptions: LoggerOptions = {}) {
 
   (logger as PinoLoggerExtended).getParams = () => ({
     ...options,
-    ...getParams()
-  }) ;
+    ...getParams(),
+  });
   (logger as PinoLoggerExtended).stopArchiver = stopArchiver;
-
+  (logger as PinoLoggerExtended).close = async () => await close();
   return logger as PinoLoggerExtended;
 }
 

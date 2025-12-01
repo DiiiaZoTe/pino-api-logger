@@ -1,6 +1,6 @@
 import pino from "pino";
 import { getOrCreateFileWriter } from "./registry";
-import type { BaseLoggerOptions, FileWriterOptions } from "./types";
+import type { BaseLoggerOptions, CustomPinoOptions, FileWriterOptions } from "./types";
 
 /** Internal function to create a logger */
 export function internalCreateLogger({
@@ -8,11 +8,14 @@ export function internalCreateLogger({
   level,
   pinoPretty,
   toConsole,
+  pinoOptions,
   flushInterval,
   maxBufferLines,
   maxBufferKilobytes,
   maxDailyLogSizeMegabytes,
-}: Required<BaseLoggerOptions & FileWriterOptions>) {
+}: Required<Omit<BaseLoggerOptions, "pinoOptions"> & FileWriterOptions> & {
+  pinoOptions?: CustomPinoOptions;
+}) {
   // daily rotating file writer (object with write)
   // Use registry to ensure singleton writer per directory
   const fileWriter = getOrCreateFileWriter({
@@ -46,25 +49,37 @@ export function internalCreateLogger({
     streams.push({ stream: prettyStream });
   }
 
-  // Create the pino logger using multistream
-  const logger = pino(
-    {
-      level,
-      base: {},
-      timestamp: () => `,"time":"${new Date().toISOString()}"`,
-      formatters: {
-        log(object) {
-          const { msg, ...rest } = object;
-          return { ...rest, msg }; // msg comes last
-        },
-        level: (label) => ({ level: label }),
+  // Default pino options (can be overridden by user's pinoOptions)
+  const defaultPinoOptions: pino.LoggerOptions = {
+    level,
+    base: {},
+    timestamp: () => `,"time":"${new Date().toISOString()}"`,
+    formatters: {
+      log(object) {
+        const { msg, ...rest } = object;
+        return { ...rest, msg }; // msg comes last
       },
+      level: (label) => ({ level: label }),
     },
-    pino.multistream(streams),
-  );
+  };
+
+  // Merge user's pinoOptions with defaults (user options take precedence)
+  // Note: formatters are shallow merged to allow partial overrides
+  const mergedOptions: pino.LoggerOptions = {
+    ...defaultPinoOptions,
+    ...pinoOptions,
+    formatters: {
+      ...defaultPinoOptions.formatters,
+      ...pinoOptions?.formatters,
+    },
+  };
+
+  // Create the pino logger using multistream
+  const logger = pino(mergedOptions, pino.multistream(streams));
 
   return {
     logger,
     getParams: () => fileWriter.getInstanceOptions(),
+    close: async () => await fileWriter.close(),
   };
 }
