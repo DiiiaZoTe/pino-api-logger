@@ -6,7 +6,8 @@ import { getOrCreateArchiver, getOrCreateFileWriter, resetLogRegistry } from "./
 import type { LoggerOptions, PinoLoggerExtended } from "./types";
 
 export { startMonthlyArchiver, resetLogRegistry, getOrCreateArchiver, getOrCreateFileWriter };
-export type { LoggerOptions, CustomPinoOptions, PinoLoggerExtended } from "./types";
+export type { PrettyOptions } from "pino-pretty";
+export type { CustomPinoOptions, LoggerOptions, PinoLoggerExtended } from "./types";
 
 /**
  * Create a pinologger with a monthly archiver. Starts the monthly archiver scheduled task automatically.
