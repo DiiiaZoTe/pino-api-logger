@@ -288,6 +288,11 @@ const logger = createLogger();
 const userLogger = logger.child({ service: "user-service" });
 userLogger.info({ userId: 123 }, "User created");
 
+// Note that the child logger does not have the new properties of the parent like:
+// - getting the params
+// - stop/start the archive
+// - ...
+
 // Logs: {"level":"info","service":"user-service","userId":123,"msg":"User created"}
 ```
 
