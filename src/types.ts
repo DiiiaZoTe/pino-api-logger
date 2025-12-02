@@ -13,6 +13,7 @@ export type LoggerWithArchiverOptions = RequiredLoggerOptions & {
 };
 export type PinoLoggerExtended = pino.Logger<never, boolean> & {
   stopArchiver: () => void;
+  startArchiver: () => void;
   getParams: () => RequiredLoggerOptions;
   close: () => Promise<void>;
 };
@@ -94,4 +95,10 @@ export type MonthlyArchiverOptions = {
    * @default true
    */
   archiveLogging?: boolean;
+  /**
+   * Whether to completely disable the archiving process.
+   * When true, no archiver will be started and `startArchiver` must be called manually if needed.
+   * @default false
+   */
+  disableArchiving?: boolean;
 };

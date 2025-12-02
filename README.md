@@ -93,6 +93,7 @@ const logger = createLogger({
   runArchiveOnCreation: true,     // Run archive check on logger creation (default: true)
   archiveDir: "archives",         // Archive directory relative to logDir (default: "archives")
   archiveLogging: true,           // Log archive operations (default: true)
+  disableArchiving: false,        // Completely disable archiving (default: false)
 });
 ```
 
@@ -113,6 +114,7 @@ const logger = createLogger({
 | `runArchiveOnCreation` | `boolean` | `true` | Archive needed files immediately on startup |
 | `archiveDir` | `string` | `"archives"` | Archive output directory |
 | `archiveLogging` | `boolean` | `true` | Log archiver operations |
+| `disableArchiving` | `boolean` | `false` | Completely disable the archiving process |
 
 ### Default pino-pretty Options
 
@@ -189,6 +191,7 @@ const logger = createLogger({
 Returns a Pino logger with additional methods:
 
 - **`logger.stopArchiver()`** — Stops the monthly archiver cron job
+- **`logger.startArchiver()`** — Starts the monthly archiver (useful when `disableArchiving: true` was set)
 - **`logger.close()`** — Flushes the buffer and closes the file writer stream (async)
 - **`logger.getParams()`** — Returns the resolved logger configuration
 
@@ -211,10 +214,6 @@ Manually start a monthly archiver. Typically not needed as `createLogger` handle
 ### `getOrCreateFileWriter(options)`
 
 Get or create a file writer for a specific log directory. Uses singleton pattern to ensure one writer per directory.
-
-### `getOrCreateArchiver(options)`
-
-Get or create an archiver for a specific log directory. Throws if conflicting options are provided for the same directory.
 
 ## Log File Structure
 
@@ -307,6 +306,20 @@ process.on("SIGTERM", () => {
       process.exit(1);
     });
 });
+```
+
+### Disable Archiving / Manual Control
+
+```typescript
+// Create logger with archiving disabled
+const logger = createLogger({ disableArchiving: true });
+
+// Start archiving later when needed
+logger.startArchiver();
+
+// Stop and restart archiving as needed
+logger.stopArchiver();
+logger.startArchiver();
 ```
 
 ### Multiple Loggers, Same Directory

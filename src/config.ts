@@ -17,7 +17,7 @@ export const DEFAULT_LOGGER_OPTIONS: RequiredLoggerOptions = {
   runArchiveOnCreation: true,
   archiveDir: "archives",
   archiveLogging: true,
-
+  disableArchiving: false,
   flushInterval: 200,
   maxBufferLines: 500,
   maxBufferKilobytes: 1024,

@@ -35,33 +35,62 @@ export function getOrCreateFileWriter(opts: Required<FileWriterOptions>): FileWr
   return writer;
 }
 
+export type ArchiverController = {
+  start: () => void;
+  stop: () => void;
+};
+
 /**
- * Get or create a MonthlyArchiver for the given log directory.
- * Enforces strict conflict resolution: throws if trying to register a different config for the same directory.
+ * Create an archiver controller for the given log directory.
+ * Provides start/stop methods to control the archiver lifecycle.
+ * @param opts - The archiver options
+ * @param autoStart - Whether to start the archiver immediately (default: true)
  */
-export function getOrCreateArchiver(opts: LoggerWithArchiverOptions): () => void {
+export function createArchiverController(
+  opts: LoggerWithArchiverOptions,
+  autoStart = true,
+): ArchiverController {
   const key = opts.logDir;
-  const existing = archiverRegistry.get(key);
+  let isRunning = false;
 
-  if (existing) {
-    // Check for conflicts
-    if (
-      existing.options.archiveDir !== opts.archiveDir ||
-      existing.options.archiveCron !== opts.archiveCron
-    ) {
-      throw new Error(
-        `[${DEFAULT_PACKAGE_NAME}] Cannot create multiple archivers for logDir "${key}" with conflicting options. ` +
-          `Existing: ${JSON.stringify(existing.options)}, Requested: ${JSON.stringify(opts)}`,
-      );
+  const start = () => {
+    if (isRunning) return;
+
+    const existing = archiverRegistry.get(key);
+    if (existing) {
+      // Check for conflicts
+      if (
+        existing.options.archiveDir !== opts.archiveDir ||
+        existing.options.archiveCron !== opts.archiveCron
+      ) {
+        throw new Error(
+          `[${DEFAULT_PACKAGE_NAME}] Cannot create multiple archivers for logDir "${key}" with conflicting options. ` +
+            `Existing: ${JSON.stringify(existing.options)}, Requested: ${JSON.stringify(opts)}`,
+        );
+      }
+      isRunning = true;
+      return;
     }
-    // Return the existing stop function
-    return existing.stop;
-  }
 
-  // Start new archiver
-  const stop = startMonthlyArchiver(opts);
-  archiverRegistry.set(key, { stop, options: opts });
-  return stop;
+    const stopFn = startMonthlyArchiver(opts);
+    archiverRegistry.set(key, { stop: stopFn, options: opts });
+    isRunning = true;
+  };
+
+  const stop = () => {
+    if (!isRunning) return;
+
+    const existing = archiverRegistry.get(key);
+    if (existing) {
+      existing.stop();
+      archiverRegistry.delete(key);
+    }
+    isRunning = false;
+  };
+
+  if (autoStart) start();
+
+  return { start, stop };
 }
 
 /**

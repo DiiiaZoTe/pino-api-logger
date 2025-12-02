@@ -2,11 +2,12 @@ import cron from "node-cron";
 import { DEFAULT_LOGGER_OPTIONS, DEFAULT_PACKAGE_NAME } from "./config";
 import { internalCreateLogger } from "./internal-logger";
 import { startMonthlyArchiver } from "./monthly-archiver";
-import { getOrCreateArchiver, getOrCreateFileWriter, resetLogRegistry } from "./registry";
+import { createArchiverController, getOrCreateFileWriter, resetLogRegistry } from "./registry";
 import type { LoggerOptions, PinoLoggerExtended } from "./types";
 
-export { startMonthlyArchiver, resetLogRegistry, getOrCreateArchiver, getOrCreateFileWriter };
+export { startMonthlyArchiver, resetLogRegistry, getOrCreateFileWriter };
 export type { PrettyOptions } from "pino-pretty";
+export type { ArchiverController } from "./registry";
 export type { CustomPinoOptions, LoggerOptions, PinoLoggerExtended } from "./types";
 
 /**
@@ -19,17 +20,17 @@ export function createLogger(loggerOptions: LoggerOptions = {}) {
   const options = validateLoggerOptions(loggerOptions);
   const { logger, getParams, close } = internalCreateLogger(options);
 
-  // Use registry to ensure singleton archiver per directory
-  const stopArchiver = getOrCreateArchiver({
-    ...options,
-    logger: logger.child({ name: "monthly-archiver" }),
-  });
+  const archiver = createArchiverController(
+    { ...options, logger: logger.child({ name: "monthly-archiver" }) },
+    !options.disableArchiving,
+  );
 
   (logger as PinoLoggerExtended).getParams = () => ({
     ...options,
     ...getParams(),
   });
-  (logger as PinoLoggerExtended).stopArchiver = stopArchiver;
+  (logger as PinoLoggerExtended).stopArchiver = archiver.stop;
+  (logger as PinoLoggerExtended).startArchiver = archiver.start;
   (logger as PinoLoggerExtended).close = async () => await close();
   return logger as PinoLoggerExtended;
 }
