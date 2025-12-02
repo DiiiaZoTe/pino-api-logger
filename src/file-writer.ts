@@ -271,7 +271,8 @@ export class FileWriter {
 
     // Main log is full, look for the most recent overflow file with space
     const overflowPattern = new RegExp(`^${this.currentDate}~\\d{2}-\\d{2}-\\d{2}.*\\.log$`);
-    const overflowFiles = fs.readdirSync(this.logDir)
+    const overflowFiles = fs
+      .readdirSync(this.logDir)
       .filter((f) => overflowPattern.test(f))
       .sort(); // Alphabetical sort = chronological (timestamp in name)
 
