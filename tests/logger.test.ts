@@ -27,7 +27,6 @@ describe("Logger Package", () => {
   it("01 - should create a logger instance", () => {
     const logDir = getTestLogDir("01");
     const logger = createLogger({ logDir, runArchiveOnCreation: false });
-    console.log(logger.getParams());
     expect(typeof logger.info).toBe("function");
     expect(typeof logger.error).toBe("function");
   });
