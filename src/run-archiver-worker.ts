@@ -23,7 +23,7 @@ export async function runArchiverWorker(options: RequiredLoggerOptions) {
       pinoOptions: {
         ...options.pinoOptions,
         name: "monthly-archiver-worker",
-      }
+      },
     });
 
     const { logDir, archiveDir, archiveLogging } = options;
