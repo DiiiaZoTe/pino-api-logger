@@ -223,6 +223,113 @@ describe("Logger Package", () => {
     expect(keys[keys.length - 1]).toBe("msg");
     expect(logLine.data).toBe("test-data");
   });
+
+  it("10 - should not archive when disableArchiving is true", async () => {
+    const logDir = getTestLogDir("10");
+    const previousMonthDate = await createCopyOfTodayFileMinusXDays(logDir, 31);
+
+    // Create logger with archiving disabled
+    const _logger = createLogger({
+      logDir,
+      archiveDir: TEST_ARCHIVE_DIR,
+      disableArchiving: true,
+      runArchiveOnCreation: true, // Would normally trigger archive, but disabled
+    });
+
+    // Wait for archive to potentially happen
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    // Check that no archive folder was created
+    const files = await fs.readdir(logDir);
+    const archiveFolder = files.find((f) => f.startsWith(TEST_ARCHIVE_DIR));
+    expect(archiveFolder).toBeUndefined();
+
+    // The old log file should still be there (not archived)
+    const oldLogFile = files.find((f) => f.startsWith(previousMonthDate));
+    expect(oldLogFile).toBeDefined();
+  });
+
+  it("11 - should write to overflow file when main log is already full on startup", async () => {
+    const logDir = getTestLogDir("11");
+    await fs.mkdir(logDir, { recursive: true });
+
+    // Create a main log file that exceeds 1MB (the minimum maxDailyLogSizeMegabytes)
+    const mainLogPath = path.join(logDir, todayFile);
+    const largeContent = "x".repeat(1.1 * 1024 * 1024); // ~1.1MB
+    await fs.writeFile(mainLogPath, largeContent);
+
+    // Create logger with 1MB max daily size - should immediately use overflow
+    const logger = createLogger({
+      logDir,
+      maxDailyLogSizeMegabytes: 1,
+      maxBufferLines: 1,
+      runArchiveOnCreation: false,
+    });
+
+    logger.info("This should go to overflow file");
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    // Check that an overflow file was created
+    const files = await fs.readdir(logDir);
+    const overflowFile = files.find(
+      (f) => f.startsWith(todayDate) && f !== todayFile && f.endsWith(".log")
+    );
+    expect(overflowFile).toBeDefined();
+    if (!overflowFile) throw new Error("Overflow file not found");
+
+    // Verify the log was written to the overflow file, not the main file
+    const overflowContent = await fs.readFile(path.join(logDir, overflowFile), "utf-8");
+    expect(overflowContent).toContain("This should go to overflow file");
+
+    // Main file should still only contain the original large content (no new logs)
+    const mainContent = await fs.readFile(mainLogPath, "utf-8");
+    expect(mainContent).not.toContain("This should go to overflow file");
+  });
+
+  it("12 - should resume writing to existing overflow file with remaining space", async () => {
+    const logDir = getTestLogDir("12");
+    await fs.mkdir(logDir, { recursive: true });
+
+    // Create a main log file that exceeds 1MB
+    const mainLogPath = path.join(logDir, todayFile);
+    const largeContent = "x".repeat(1.1 * 1024 * 1024); // ~1.1MB
+    await fs.writeFile(mainLogPath, largeContent);
+
+    // Create an existing overflow file with some content (but not full)
+    // Use a fixed timestamp pattern that matches the overflow naming convention
+    const existingOverflowName = `${todayDate}~00-00-01.log`;
+    const existingOverflowPath = path.join(logDir, existingOverflowName);
+    const existingContent = '{"level":30,"time":1234567890,"msg":"Previous log entry"}\n';
+    await fs.writeFile(existingOverflowPath, existingContent);
+
+    // Create logger - should pick up the existing overflow file
+    const logger = createLogger({
+      logDir,
+      maxDailyLogSizeMegabytes: 1,
+      maxBufferLines: 1,
+      runArchiveOnCreation: false,
+    });
+
+    logger.info("This should append to existing overflow");
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    // Check the files in the directory
+    const files = await fs.readdir(logDir);
+    const overflowFiles = files.filter(
+      (f) => f.startsWith(todayDate) && f !== todayFile && f.endsWith(".log")
+    );
+
+    // Should only have the one existing overflow file (no new one created)
+    expect(overflowFiles.length).toBe(1);
+    expect(overflowFiles[0]).toBe(existingOverflowName);
+
+    // Verify the new log was appended to the existing overflow file
+    const overflowContent = await fs.readFile(existingOverflowPath, "utf-8");
+    expect(overflowContent).toContain("Previous log entry"); // Original content preserved
+    expect(overflowContent).toContain("This should append to existing overflow"); // New content appended
+  });
 });
 
 /**
@@ -240,7 +347,7 @@ const createCopyOfTodayFileMinusXDays = async (logDir: string, x = 31) => {
   if (!sourceFile) {
     // Create a minimal log file for today
     const todayFilePath = path.join(logDir, todayFile);
-    await fs.writeFile(todayFilePath, '{"level":"info","time":"' + new Date().toISOString() + '","msg":"test"}\n');
+    await fs.writeFile(todayFilePath, `{"level":"info","time":"${new Date().toISOString()}","msg":"test"}\n`);
     sourceFile = todayFile;
   }
 

@@ -95,8 +95,14 @@ export class FileWriter {
   private stream: fs.WriteStream | undefined = undefined;
   private flushTimer!: NodeJS.Timeout;
   private isEnabled: boolean = true; // true if the writer is enabled, false if it is disabled due to an error
+  private initialFileSizeBytes = 0;
 
   private state = new FlushRotateState();
+
+  /** Total bytes in current log file (existing + newly written) */
+  private get currentFileSizeBytes(): number {
+    return this.initialFileSizeBytes + (this.stream?.bytesWritten ?? 0);
+  }
 
   constructor(opts: Required<FileWriterOptions>) {
     this.logDir = opts.logDir;
@@ -118,7 +124,7 @@ export class FileWriter {
     }
 
     this.currentDate = this.getDateString();
-    this.openStream(this.getLogPath(this.currentDate)); // Refactored to helper
+    this.openStream(this.getInitialLogPath());
 
     this.flushTimer = setInterval(() => this.flushIfNeeded(), this.flushInterval);
     this.flushTimer.unref?.();
@@ -156,6 +162,15 @@ export class FileWriter {
   // Helper to safely open stream and attach error handler
   private openStream(filepath: string, errorCounter: number = 0) {
     if (!this.isEnabled) return;
+
+    // Check existing file size to account for bytes already on disk
+    try {
+      const stats = fs.statSync(filepath);
+      this.initialFileSizeBytes = stats.size;
+    } catch {
+      this.initialFileSizeBytes = 0; // File doesn't exist yet
+    }
+
     this.stream = fs.createWriteStream(filepath, { flags: "a" });
     // CRITICAL: Handle stream errors to prevent process crash
     this.stream.on("error", (err) => {
@@ -193,33 +208,89 @@ export class FileWriter {
   }
 
   /**
-   * Get a unique overflow filename for the current date.
+   * Generate candidate overflow filenames for the current date.
    * Prefer HH-mm-ss; only add millisecond (and counter) when collisions occur.
    */
-  private async getOverflowLogPath(): Promise<string> {
+  private *generateOverflowCandidates(): Generator<string> {
     const now = new Date();
     const hh = String(now.getHours()).padStart(2, "0");
     const mm = String(now.getMinutes()).padStart(2, "0");
     const ss = String(now.getSeconds()).padStart(2, "0");
-
-    const baseName = `${this.currentDate}.${hh}-${mm}-${ss}`;
-    let candidate = path.join(this.logDir, `${baseName}.log`);
-
-    // If candidate doesn't exist, use it (fast path)
-    if (!(await this.fileExists(candidate))) return candidate;
-
-    // Otherwise append milliseconds
     const ms = String(now.getMilliseconds()).padStart(3, "0");
-    candidate = path.join(this.logDir, `${baseName}.${ms}.log`);
-    if (!(await this.fileExists(candidate))) return candidate;
+
+    const baseName = `${this.currentDate}~${hh}-${mm}-${ss}`;
+
+    // First candidate: just timestamp
+    yield path.join(this.logDir, `${baseName}.log`);
+
+    // Second candidate: with milliseconds
+    yield path.join(this.logDir, `${baseName}-${ms}.log`);
 
     // Extremely rare: append numeric suffix until unique
     let counter = 1;
     while (true) {
-      const withCounter = path.join(this.logDir, `${baseName}.${ms}-${counter}.log`);
-      if (!(await this.fileExists(withCounter))) return withCounter;
+      yield path.join(this.logDir, `${baseName}-${ms}~${counter}.log`);
       counter++;
     }
+  }
+
+  /** Get a unique overflow filename (async version) */
+  private async getOverflowLogPath(): Promise<string> {
+    for (const candidate of this.generateOverflowCandidates()) {
+      if (!(await this.fileExists(candidate))) return candidate;
+    }
+    // Technically unreachable, because generator is infinite
+    throw new Error(`${DEFAULT_PACKAGE_NAME}: Unable to generate unique log path`);
+  }
+
+  /** Get a unique overflow filename (sync version for constructor) */
+  private getOverflowLogPathSync(): string {
+    for (const candidate of this.generateOverflowCandidates()) {
+      if (!fs.existsSync(candidate)) return candidate;
+    }
+    // Technically unreachable, because generator is infinite
+    throw new Error(`${DEFAULT_PACKAGE_NAME}: Unable to generate unique log path`);
+  }
+
+  /**
+   * Determine the correct log file path on startup.
+   * Checks main log file first, then looks for existing overflow files with space.
+   */
+  private getInitialLogPath(): string {
+    const mainLogPath = this.getLogPath(this.currentDate);
+
+    // Check main log file size
+    try {
+      const stats = fs.statSync(mainLogPath);
+      if (stats.size < this.maxDailyLogSizeBytes) {
+        return mainLogPath; // Main log has space
+      }
+    } catch {
+      return mainLogPath; // Main log doesn't exist, use it
+    }
+
+    // Main log is full, look for the most recent overflow file with space
+    const overflowPattern = new RegExp(`^${this.currentDate}~\\d{2}-\\d{2}-\\d{2}.*\\.log$`);
+    const overflowFiles = fs.readdirSync(this.logDir)
+      .filter((f) => overflowPattern.test(f))
+      .sort(); // Alphabetical sort = chronological (timestamp in name)
+
+    if (overflowFiles.length > 0) {
+      // Check the most recent overflow file (last in sorted order)
+      const mostRecent = overflowFiles[overflowFiles.length - 1];
+      const mostRecentPath = path.join(this.logDir, mostRecent);
+      try {
+        const stats = fs.statSync(mostRecentPath);
+        if (stats.size < this.maxDailyLogSizeBytes) {
+          return mostRecentPath; // Most recent overflow has space
+        }
+      } catch {
+        // If we can't stat it, fall through to create new overflow
+      }
+    }
+
+    // No overflow files with space, create a new one
+    return this.getOverflowLogPathSync();
   }
 
   /** Main write interface for Pino */
@@ -232,7 +303,7 @@ export class FileWriter {
     const today = this.getDateString();
     if (today !== this.currentDate) {
       this.requestRotation();
-    } else if (this.stream.bytesWritten + lineBytes >= this.maxDailyLogSizeBytes) {
+    } else if (this.currentFileSizeBytes + lineBytes >= this.maxDailyLogSizeBytes) {
       this.requestRotation();
     }
 
