@@ -219,9 +219,9 @@ Get or create a file writer for a specific log directory. Uses singleton pattern
 
 ```
 logs/
-├── 2024-01-15.log           # Today's log file
-├── 2024-01-14.log           # Yesterday's log
-├── 2024-01-14.23-59-59.log  # Overflow file (when max size exceeded)
+├── 2025-01-01.log           # Yesterday's log
+├── 2025-01-01~15-59-59.log  # Overflow file (when max size exceeded)
+├── 2025-01-01.log           # Today's log file
 └── archives/
     ├── 2023-12.tar.gz       # Archived December logs
     └── 2023-11.tar.gz       # Archived November logs
@@ -232,8 +232,8 @@ logs/
 Logs are written as JSON lines (NDJSON) for easy parsing:
 
 ```json
-{"level":"info","time":"2024-01-15T10:30:00.000Z","name":"my-app","msg":"User logged in"}
-{"level":"error","time":"2024-01-15T10:30:01.000Z","err":{"message":"Connection failed"},"msg":"Database error"}
+{"level":"info","time":"2025-01-01T10:30:00.000Z","name":"my-app","msg":"User logged in"}
+{"level":"error","time":"2025-01-01T10:30:01.000Z","err":{"message":"Connection failed"},"msg":"Database error"}
 ```
 
 ## Usage Examples
@@ -339,6 +339,33 @@ const dbLogger = createLogger({
 
 // Both loggers write to the same file with maxBufferLines: 50
 ```
+
+### Separate Logs by Service/Component
+
+If you need separate log files for different services or components, use subdirectories since this library does not provide a file prefix. This keeps logs isolated:
+
+```ts
+//Each service gets its own log directory and files:
+const apiLogger = createLogger({ logDir: "logs/api" });
+const workerLogger = createLogger({ logDir: "logs/worker" });
+const schedulerLogger = createLogger({ logDir: "logs/scheduler" });
+```
+
+Results in:
+```
+logs/
+├── api/
+│   ├── 2025-01-01.log
+│   └── archives/
+├── worker/
+│   ├── 2025-01-01.log
+│   └── archives/
+└── scheduler/
+    ├── 2025-01-01.log
+    └── archives/
+```
+
+Each subdirectory maintains its own archiving schedule and file rotation independently.
 
 ## Performance
 
