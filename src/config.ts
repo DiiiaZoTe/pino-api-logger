@@ -13,6 +13,7 @@ export const DEFAULT_LOGGER_OPTIONS: RequiredLoggerOptions = {
     translateTime: "yyyy-mm-dd HH:MM:ss.l",
   },
   toConsole: true,
+  toFile: true,
   archiveCron: "0 1 1 * *",
   runArchiveOnCreation: true,
   archiveDir: "archives",

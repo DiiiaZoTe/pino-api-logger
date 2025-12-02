@@ -21,12 +21,12 @@ This package provides **sensible defaults** for a production-ready logging setup
 - Log format: JSON lines with ISO timestamps
 - Formatter structure: `level` as string, `msg` always last
 - Base options: `pid` and `hostname` excluded
-- Multi-stream setup: file + optional console (this is core and canoot be removed)
+- Multi-stream setup: file and/or console (at least one must be enabled)
 
 **Managed internally (cannot be overridden):**
 - Transport configuration (multi-stream to file + console)
-- Daily rotation and buffered writes
-- Monthly archiving
+- Daily rotation and buffered writes (when `toFile: true`)
+- Monthly archiving (when `toFile: true`)
 
 ## Installation
 
@@ -67,6 +67,7 @@ const logger = createLogger({
   // Base logger options
   logDir: "logs",           // Directory to write logs (default: "logs")
   level: "info",            // Log level: trace, debug, info, warn, error, fatal (default: "info")
+  toFile: true,             // Write to file (default: true)
   toConsole: true,          // Write to console (default: true)
   pinoPretty: {             // pino-pretty options for console output
     singleLine: false,
@@ -103,6 +104,7 @@ const logger = createLogger({
 |--------|------|---------|-------------|
 | `logDir` | `string` | `"logs"` | Directory for log files |
 | `level` | `string` | `"info"` | Pino default log level |
+| `toFile` | `boolean` | `true` | Write logs to file. This is the default if both `toFile` or `toConsole` are set to false |
 | `toConsole` | `boolean` | `true` | Enable console output via pino-pretty (False recommended in Production if you don't have a need to drain logs) |
 | `pinoPretty` | `PrettyOptions` | See below | pino-pretty configuration |
 | `pinoOptions` | `CustomPinoOptions` | `undefined` | Custom Pino options to override defaults (see below) |
@@ -326,6 +328,26 @@ logger.startArchiver();
 logger.stopArchiver();
 logger.startArchiver();
 ```
+
+### Console-Only Logging
+
+For development or debugging scenarios where you don't need file output:
+
+```typescript
+// Console-only logger (no file output, archiving automatically disabled)
+const devLogger = createLogger({
+  toFile: false,
+  toConsole: true,
+});
+
+// File-only logger (no console output, useful for production)
+const prodLogger = createLogger({
+  toFile: true,
+  toConsole: false,
+});
+```
+
+**Note:** When `toFile` is `false`, archiving is automatically disabled since there's nothing to archive. At least one of `toFile` or `toConsole` must be `true` - We will enforce `toFile` to be `true` at compile time otherwise.
 
 ### Multiple Loggers, Same Directory
 

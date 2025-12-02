@@ -8,6 +8,7 @@ export function internalCreateLogger({
   level,
   pinoPretty,
   toConsole,
+  toFile,
   pinoOptions,
   flushInterval,
   maxBufferLines,
@@ -17,20 +18,24 @@ export function internalCreateLogger({
   pinoOptions?: CustomPinoOptions;
 }) {
   // daily rotating file writer (object with write)
-  // Use registry to ensure singleton writer per directory
-  const fileWriter = getOrCreateFileWriter({
-    logDir,
-    flushInterval,
-    maxBufferLines,
-    maxBufferKilobytes,
-    maxDailyLogSizeMegabytes,
-  });
+  // Use registry to ensure singleton writer per directory (only if writing to file)
+  const fileWriter = toFile
+    ? getOrCreateFileWriter({
+        logDir,
+        flushInterval,
+        maxBufferLines,
+        maxBufferKilobytes,
+        maxDailyLogSizeMegabytes,
+      })
+    : null;
 
   // Build streams array for pino.multistream
-  const streams: Array<{ stream: { write: (msg: string) => void } }> = [
-    // always write JSON lines to daily file
-    { stream: { write: (msg: string) => fileWriter.write(msg) } },
-  ];
+  const streams: Array<{ stream: { write: (msg: string) => void } }> = [];
+
+  // Add file stream when toFile is enabled
+  if (toFile && fileWriter) {
+    streams.push({ stream: { write: (msg: string) => fileWriter.write(msg) } });
+  }
 
   // stdout when requested
   if (toConsole) {
@@ -79,7 +84,14 @@ export function internalCreateLogger({
 
   return {
     logger,
-    getParams: () => fileWriter.getInstanceOptions(),
-    close: async () => await fileWriter.close(),
+    getParams: () => ({
+      ...mergedOptions,
+      ...(fileWriter?.getInstanceOptions() ?? {}),
+    }),
+    close: async () => {
+      if (fileWriter) {
+        await fileWriter.close();
+      }
+    },
   };
 }

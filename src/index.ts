@@ -64,8 +64,24 @@ function validateLoggerOptions(options: LoggerOptions) {
     options.archiveCron = DEFAULT_LOGGER_OPTIONS.archiveCron;
   }
 
-  return {
+  const optionsWithDefaults = {
     ...DEFAULT_LOGGER_OPTIONS,
     ...options,
   };
+
+  // Runtime safety: ensure at least one output is enabled (toFile or toConsole)
+  // This check is for JavaScript users or those bypassing TypeScript's type system
+  if (optionsWithDefaults.toFile === false && optionsWithDefaults.toConsole === false) {
+    console.error(
+      `[${DEFAULT_PACKAGE_NAME}] Both toFile and toConsole are false. At least one must be true. Setting toFile to true.`,
+    );
+    optionsWithDefaults.toFile = true;
+  }
+
+  // If not writing to file, disable archiving (nothing to archive)
+  if (optionsWithDefaults.toFile === false) {
+    optionsWithDefaults.disableArchiving = true;
+  }
+
+  return optionsWithDefaults;
 }

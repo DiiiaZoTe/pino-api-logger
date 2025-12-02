@@ -4,7 +4,19 @@ import type { PrettyOptions } from "pino-pretty";
 /** Pino options that can be customized by the user (transport is managed internally) */
 export type CustomPinoOptions = Omit<pino.LoggerOptions, "transport">;
 
-export type LoggerOptions = BaseLoggerOptions & FileWriterOptions & MonthlyArchiverOptions;
+/**
+ * Type-safe output configuration that ensures at least one output (file or console) is enabled.
+ * - If `toFile` is false, `toConsole` must be true or omitted (defaults to true)
+ * - If `toFile` is true or omitted, `toConsole` can be any value
+ */
+export type OutputConfig =
+  | { toFile?: true; toConsole?: boolean } // toFile true or omitted
+  | { toFile: false; toConsole?: true }; // toFile false requires toConsole true
+
+export type LoggerOptions = Omit<BaseLoggerOptions, "toFile" | "toConsole"> &
+  FileWriterOptions &
+  MonthlyArchiverOptions &
+  OutputConfig;
 /** pinoOptions remains optional as it's user-provided overrides */
 export type RequiredLoggerOptions = Required<Omit<LoggerOptions, "pinoOptions">> &
   Pick<LoggerOptions, "pinoOptions">;
@@ -36,6 +48,12 @@ export type BaseLoggerOptions = {
    * @default true
    */
   toConsole?: boolean;
+  /**
+   * Whether to write logs to a file.
+   * At least one of `toFile` or `toConsole` must be true.
+   * @default true
+   */
+  toFile?: boolean;
   /**
    * Custom pino options to override/extend the default configuration.
    * Transport is managed internally and cannot be overridden.

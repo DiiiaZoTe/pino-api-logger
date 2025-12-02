@@ -1,7 +1,7 @@
+import { afterEach, describe, expect, it } from "bun:test";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createLogger, resetLogRegistry } from "../src/index";
-import { describe, it, expect, afterEach } from "bun:test";
 
 const TEST_LOG_BASE_DIR = "./logs-test";
 const TEST_ARCHIVE_DIR = "archives";
@@ -27,6 +27,7 @@ describe("Logger Package", () => {
   it("01 - should create a logger instance", () => {
     const logDir = getTestLogDir("01");
     const logger = createLogger({ logDir, runArchiveOnCreation: false });
+    console.log(logger.getParams());
     expect(typeof logger.info).toBe("function");
     expect(typeof logger.error).toBe("function");
   });
@@ -329,6 +330,76 @@ describe("Logger Package", () => {
     const overflowContent = await fs.readFile(existingOverflowPath, "utf-8");
     expect(overflowContent).toContain("Previous log entry"); // Original content preserved
     expect(overflowContent).toContain("This should append to existing overflow"); // New content appended
+  });
+
+  it("13 - should not write to file when toFile is false", async () => {
+    const logDir = getTestLogDir("13");
+    await fs.mkdir(logDir, { recursive: true });
+
+    // Create logger with toFile: false (console only)
+    const logger = createLogger({
+      logDir,
+      toFile: false,
+      // toConsole: true, // Can be ommited true is default
+      runArchiveOnCreation: false,
+    });
+
+    logger.info("This should not go to file");
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    // Check that no log file was created
+    const files = await fs.readdir(logDir);
+    const logFile = files.find((f) => f.endsWith(".log"));
+    expect(logFile).toBeUndefined();
+  });
+
+  it("14 - should write to file when toFile is true and toConsole is false", async () => {
+    const logDir = getTestLogDir("14");
+    const todayFilePath = getTodayFilePath("14");
+
+    // Create logger with toConsole: false (file only)
+    const logger = createLogger({
+      logDir,
+      toFile: true,
+      toConsole: false,
+      maxBufferLines: 1,
+      runArchiveOnCreation: false,
+    });
+
+    logger.info("This should go to file only");
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    // Check that log file was created and contains the message
+    const content = await fs.readFile(todayFilePath, "utf-8");
+    expect(content).toContain("This should go to file only");
+  });
+
+  it("15 - should disable archiving when toFile is false", async () => {
+    const logDir = getTestLogDir("15");
+    await createCopyOfTodayFileMinusXDays(logDir, 31);
+
+    // Create logger with toFile: false - archiving should be automatically disabled
+    const logger = createLogger({
+      logDir,
+      toFile: false,
+      toConsole: true,
+      archiveDir: TEST_ARCHIVE_DIR,
+      runArchiveOnCreation: true, // Would normally trigger archive
+    });
+
+    // Wait for archive to potentially happen
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    // Check that no archive folder was created (archiving was disabled)
+    const files = await fs.readdir(logDir);
+    const archiveFolder = files.find((f) => f.startsWith(TEST_ARCHIVE_DIR));
+    expect(archiveFolder).toBeUndefined();
+
+    // Verify getParams shows disableArchiving is true
+    const params = logger.getParams();
+    expect(params.disableArchiving).toBe(true);
   });
 });
 
