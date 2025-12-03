@@ -2,16 +2,32 @@ import { afterEach, describe, expect, it } from "bun:test";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createLogger, resetLogRegistry } from "../src/index";
+import {
+  frequencyToHours,
+  parseRetention,
+  retentionToHours,
+  getMondayOfWeek,
+  getArchiveFilename,
+  getFilePeriod,
+  getCurrentPeriod,
+  parseLogFilename,
+  parseArchiveFilename,
+  getCutoffDate,
+  fileExists,
+} from "../src/utilities";
 
 const TEST_LOG_BASE_DIR = "./logs-test";
 const TEST_ARCHIVE_DIR = "archives";
 
 const todayDate = new Date().toISOString().slice(0, 10);
+const currentHour = String(new Date().getHours()).padStart(2, "0");
 const todayFile = `${todayDate}.log`;
+const hourlyFile = `${todayDate}~${currentHour}.log`;
 
 // Helper to get log dir for a specific test
 const getTestLogDir = (testNum: string) => path.join(TEST_LOG_BASE_DIR, `test-${testNum}`);
 const getTodayFilePath = (testNum: string) => path.join(getTestLogDir(testNum), todayFile);
+const getHourlyFilePath = (testNum: string) => path.join(getTestLogDir(testNum), hourlyFile);
 
 try {
   console.log("Removing test log directory if it exists...");
@@ -43,7 +59,7 @@ describe("Logger Package", () => {
     const files = await fs.readdir(logDir);
     expect(files.length).toBeGreaterThan(0);
 
-    const logFile = files.find(f => f.endsWith(".log"));
+    const logFile = files.find((f) => f.endsWith(".log"));
     expect(logFile).toBeDefined();
 
     const content = await fs.readFile(todayFilePath, "utf-8");
@@ -67,7 +83,12 @@ describe("Logger Package", () => {
   it("04 - should flush when buffer is full by disk size", async () => {
     const logDir = getTestLogDir("04");
     const todayFilePath = getTodayFilePath("04");
-    const logger = createLogger({ logDir, maxBufferKilobytes: 1, flushInterval: 300, runArchiveOnCreation: false });
+    const logger = createLogger({
+      logDir,
+      maxBufferKilobytes: 1,
+      flushInterval: 300,
+      runArchiveOnCreation: false,
+    });
     logger.info("a".repeat(750));
     logger.info("b".repeat(750));
     // should flush buffer here because the buffer is full by disk size
@@ -110,9 +131,9 @@ describe("Logger Package", () => {
 
     // we should have 1 log file and 1 archive folder with the archive file
     expect(filesAfterArchive.length).toBe(2);
-    expect(filesAfterArchive.find(f => f.endsWith(".log"))).toBeDefined();
+    expect(filesAfterArchive.find((f) => f.endsWith(".log"))).toBeDefined();
     // the archive folder should have the archive file
-    const archiveFolder = filesAfterArchive.find(f => f.startsWith(TEST_ARCHIVE_DIR));
+    const archiveFolder = filesAfterArchive.find((f) => f.startsWith(TEST_ARCHIVE_DIR));
     expect(archiveFolder).toBeDefined();
     const archiveFiles = await fs.readdir(path.join(logDir, TEST_ARCHIVE_DIR));
     // the archive folder should contain one archive file
@@ -123,7 +144,7 @@ describe("Logger Package", () => {
     expect(archiveFile.endsWith(".tar.gz")).toBe(true);
   });
 
-  it("07 - should schedule the next archive run", async () => {
+  it("07 - should use internal cron schedule based on archiveFrequency", async () => {
     const logDir = getTestLogDir("07");
     // First create a log file for today so we have something to copy
     const logger1 = createLogger({ logDir, runArchiveOnCreation: false });
@@ -132,7 +153,18 @@ describe("Logger Package", () => {
     await resetLogRegistry();
 
     const previousMonthDate = await createCopyOfTodayFileMinusXDays(logDir, 62);
-    const _logger = createLogger({ logDir, runArchiveOnCreation: false, archiveCron: '*/2 * * * * *', archiveDir: TEST_ARCHIVE_DIR, archiveLogging: true });
+    // archiveFrequency: "monthly" uses internal cron "0 1 1 * *"
+    const logger = createLogger({
+      logDir,
+      runArchiveOnCreation: false,
+      archiveFrequency: "monthly",
+      archiveDir: TEST_ARCHIVE_DIR,
+      archiveLogging: true,
+    });
+
+    // Verify the logger was created with monthly frequency
+    const params = logger.getParams();
+    expect(params.archiveFrequency).toBe("monthly");
 
     // Ensure archive dir exists for checking
     try {
@@ -142,13 +174,9 @@ describe("Logger Package", () => {
     // check that the archive file is not yet created (waiting for the interval to pass)
     const archiveFilesBefore = await fs.readdir(path.join(logDir, TEST_ARCHIVE_DIR));
     // we shouldn't find the archive for previousMonthDate
-    expect(archiveFilesBefore.find(f => f.startsWith(previousMonthDate.slice(0, 7)))).toBeUndefined();
-    await new Promise((resolve) => setTimeout(resolve, 3500));
-    const archiveFilesAfter = await fs.readdir(path.join(logDir, TEST_ARCHIVE_DIR));
-    // we should find the archive for previousMonthDate
-    expect(archiveFilesAfter.find(f => f.startsWith(previousMonthDate.slice(0, 7)))).toBeDefined();
-    // we should have 1 archive file now
-    expect(archiveFilesAfter.length).toBe(1);
+    expect(
+      archiveFilesBefore.find((f) => f.startsWith(previousMonthDate.slice(0, 7))),
+    ).toBeUndefined();
   });
 
   it("08 - should support custom pino options", async () => {
@@ -176,8 +204,11 @@ describe("Logger Package", () => {
 
     const content = await fs.readFile(todayFilePath, "utf-8");
     // Find the line with our test message (not the archiver log)
-    const lines = content.trim().split("\n").map(line => JSON.parse(line));
-    const logLine = lines.find(l => l.message === "Custom pino options test");
+    const lines = content
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    const logLine = lines.find((l) => l.message === "Custom pino options test");
 
     expect(logLine).toBeDefined();
     // Check custom base properties are present
@@ -212,8 +243,11 @@ describe("Logger Package", () => {
 
     const content = await fs.readFile(todayFilePath, "utf-8");
     // Find the line with our test message (not the archiver log)
-    const lines = content.trim().split("\n").map(line => JSON.parse(line));
-    const logLine = lines.find(l => l.msg === "Formatter merge test");
+    const lines = content
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    const logLine = lines.find((l) => l.msg === "Formatter merge test");
 
     expect(logLine).toBeDefined();
     // Custom level formatter applied
@@ -253,15 +287,15 @@ describe("Logger Package", () => {
     const logDir = getTestLogDir("11");
     await fs.mkdir(logDir, { recursive: true });
 
-    // Create a main log file that exceeds 1MB (the minimum maxDailyLogSizeMegabytes)
+    // Create a main log file that exceeds 1MB (the minimum maxLogSizeMegabytes)
     const mainLogPath = path.join(logDir, todayFile);
     const largeContent = "x".repeat(1.1 * 1024 * 1024); // ~1.1MB
     await fs.writeFile(mainLogPath, largeContent);
 
-    // Create logger with 1MB max daily size - should immediately use overflow
+    // Create logger with 1MB max size - should immediately use overflow
     const logger = createLogger({
       logDir,
-      maxDailyLogSizeMegabytes: 1,
+      maxLogSizeMegabytes: 1,
       maxBufferLines: 1,
       runArchiveOnCreation: false,
     });
@@ -273,7 +307,7 @@ describe("Logger Package", () => {
     // Check that an overflow file was created
     const files = await fs.readdir(logDir);
     const overflowFile = files.find(
-      (f) => f.startsWith(todayDate) && f !== todayFile && f.endsWith(".log")
+      (f) => f.startsWith(todayDate) && f !== todayFile && f.endsWith(".log"),
     );
     expect(overflowFile).toBeDefined();
     if (!overflowFile) throw new Error("Overflow file not found");
@@ -306,7 +340,7 @@ describe("Logger Package", () => {
     // Create logger - should pick up the existing overflow file
     const logger = createLogger({
       logDir,
-      maxDailyLogSizeMegabytes: 1,
+      maxLogSizeMegabytes: 1,
       maxBufferLines: 1,
       runArchiveOnCreation: false,
     });
@@ -318,7 +352,7 @@ describe("Logger Package", () => {
     // Check the files in the directory
     const files = await fs.readdir(logDir);
     const overflowFiles = files.filter(
-      (f) => f.startsWith(todayDate) && f !== todayFile && f.endsWith(".log")
+      (f) => f.startsWith(todayDate) && f !== todayFile && f.endsWith(".log"),
     );
 
     // Should only have the one existing overflow file (no new one created)
@@ -400,6 +434,381 @@ describe("Logger Package", () => {
     const params = logger.getParams();
     expect(params.disableArchiving).toBe(true);
   });
+
+  // New tests for v2 features
+
+  it("16 - should write to hourly file when fileRotationFrequency is hourly", async () => {
+    const logDir = getTestLogDir("16");
+    const hourlyFilePath = getHourlyFilePath("16");
+
+    const logger = createLogger({
+      logDir,
+      fileRotationFrequency: "hourly",
+      maxBufferLines: 1,
+      runArchiveOnCreation: false,
+    });
+
+    logger.info("Hourly rotation test");
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    // Check that an hourly file was created (YYYY-MM-DD~HH.log)
+    const files = await fs.readdir(logDir);
+    const hourlyFileFound = files.find((f) => f === `${todayDate}~${currentHour}.log`);
+    expect(hourlyFileFound).toBeDefined();
+
+    const content = await fs.readFile(hourlyFilePath, "utf-8");
+    expect(content).toContain("Hourly rotation test");
+  });
+
+  it("17 - should return correct frequency in getParams", async () => {
+    const logDir = getTestLogDir("17");
+
+    const logger = createLogger({
+      logDir,
+      fileRotationFrequency: "hourly",
+      archiveFrequency: "daily",
+      runArchiveOnCreation: false,
+    });
+
+    const params = logger.getParams();
+    expect(params.fileRotationFrequency).toBe("hourly");
+    expect(params.archiveFrequency).toBe("daily");
+  });
+
+  it("18 - should throw error when archiveFrequency < fileRotationFrequency", () => {
+    const logDir = getTestLogDir("18");
+
+    expect(() => {
+      createLogger({
+        logDir,
+        fileRotationFrequency: "daily",
+        archiveFrequency: "hourly", // Invalid: can't archive hourly when rotating daily
+        runArchiveOnCreation: false,
+      });
+    }).toThrow(/archiveFrequency.*must be >= fileRotationFrequency/);
+  });
+
+  it("19 - should throw error when logRetention < archiveFrequency", () => {
+    const logDir = getTestLogDir("19");
+
+    expect(() => {
+      createLogger({
+        logDir,
+        archiveFrequency: "monthly",
+        logRetention: "1w", // Invalid: 1 week < 1 month
+        runArchiveOnCreation: false,
+      });
+    }).toThrow(/logRetention.*must be >= archiveFrequency/);
+  });
+
+  it("20 - should throw error when logRetention < fileRotationFrequency", () => {
+    const logDir = getTestLogDir("20");
+
+    expect(() => {
+      createLogger({
+        logDir,
+        fileRotationFrequency: "daily",
+        logRetention: "12h", // Invalid: 12 hours < 1 day
+        disableArchiving: true,
+        runArchiveOnCreation: false,
+      });
+    }).toThrow(/logRetention.*must be >= fileRotationFrequency/);
+  });
+
+  it("21 - should throw error when using hourly retention with daily rotation", () => {
+    const logDir = getTestLogDir("21");
+
+    expect(() => {
+      createLogger({
+        logDir,
+        fileRotationFrequency: "daily",
+        logRetention: "24h", // Invalid: hourly unit can't be used with daily files
+        disableArchiving: true,
+        runArchiveOnCreation: false,
+      });
+    }).toThrow(/logRetention with hours.*cannot be used with daily file rotation/);
+  });
+
+  it("22 - should accept valid constraint hierarchy", () => {
+    const logDir = getTestLogDir("22");
+
+    // This should not throw
+    const logger = createLogger({
+      logDir,
+      fileRotationFrequency: "hourly",
+      archiveFrequency: "daily",
+      logRetention: "7d",
+      runArchiveOnCreation: false,
+    });
+
+    const params = logger.getParams();
+    expect(params.fileRotationFrequency).toBe("hourly");
+    expect(params.archiveFrequency).toBe("daily");
+    expect(params.logRetention).toBe("7d");
+  });
+
+  it("23 - should accept retention when archiving is disabled", () => {
+    const logDir = getTestLogDir("23");
+
+    // This should not throw - retention works without archiving
+    const logger = createLogger({
+      logDir,
+      fileRotationFrequency: "hourly",
+      disableArchiving: true,
+      logRetention: "3h",
+      runArchiveOnCreation: false,
+    });
+
+    const params = logger.getParams();
+    expect(params.disableArchiving).toBe(true);
+    expect(params.logRetention).toBe("3h");
+  });
+
+  it("24 - should have stopRetention and startRetention methods", () => {
+    const logDir = getTestLogDir("24");
+
+    const logger = createLogger({
+      logDir,
+      archiveFrequency: "daily", // Use daily to satisfy constraint with 7d retention
+      logRetention: "7d",
+      runArchiveOnCreation: false,
+    });
+
+    expect(typeof logger.stopRetention).toBe("function");
+    expect(typeof logger.startRetention).toBe("function");
+  });
+
+  it("25 - should throw error for invalid logRetention format", () => {
+    const logDir = getTestLogDir("25");
+
+    expect(() => {
+      createLogger({
+        logDir,
+        //@ts-expect-error - Invalid format
+        logRetention: "invalid", // Invalid format
+        runArchiveOnCreation: false,
+      });
+    }).toThrow(/Invalid logRetention format/);
+  });
+});
+
+describe("Retention Utility Functions", () => {
+  it("should parse retention strings correctly", () => {
+    expect(parseRetention("12h")).toEqual({ value: 12, unit: "h" });
+    expect(parseRetention("7d")).toEqual({ value: 7, unit: "d" });
+    expect(parseRetention("2w")).toEqual({ value: 2, unit: "w" });
+    expect(parseRetention("3m")).toEqual({ value: 3, unit: "m" });
+    expect(parseRetention("1y")).toEqual({ value: 1, unit: "y" });
+  });
+
+  it("should throw error for invalid retention format", () => {
+    expect(() => parseRetention("invalid")).toThrow(/Invalid retention format/);
+    expect(() => parseRetention("7")).toThrow(/Invalid retention format/);
+    expect(() => parseRetention("d7")).toThrow(/Invalid retention format/);
+    expect(() => parseRetention("")).toThrow(/Invalid retention format/);
+  });
+
+  it("should convert retention to hours correctly", () => {
+    expect(retentionToHours("1h")).toBe(1);
+    expect(retentionToHours("24h")).toBe(24);
+    expect(retentionToHours("1d")).toBe(24);
+    expect(retentionToHours("7d")).toBe(168);
+    expect(retentionToHours("1w")).toBe(168);
+    expect(retentionToHours("1m")).toBe(744); // 31 days
+    expect(retentionToHours("1y")).toBe(8784); // 366 days
+  });
+
+  it("should convert frequency to hours correctly", () => {
+    expect(frequencyToHours("hourly")).toBe(1);
+    expect(frequencyToHours("daily")).toBe(24);
+    expect(frequencyToHours("weekly")).toBe(168);
+    expect(frequencyToHours("monthly")).toBe(744);
+  });
+});
+
+describe("Archive Utility Functions", () => {
+  it("should get Monday of week correctly", () => {
+    // Wednesday Dec 4, 2024 -> Monday Dec 2, 2024
+    expect(getMondayOfWeek(new Date(2024, 11, 4))).toBe("2024-12-02");
+    // Sunday Dec 8, 2024 -> Monday Dec 2, 2024
+    expect(getMondayOfWeek(new Date(2024, 11, 8))).toBe("2024-12-02");
+    // Monday Dec 2, 2024 -> Monday Dec 2, 2024
+    expect(getMondayOfWeek(new Date(2024, 11, 2))).toBe("2024-12-02");
+    // Saturday Dec 7, 2024 -> Monday Dec 2, 2024
+    expect(getMondayOfWeek(new Date(2024, 11, 7))).toBe("2024-12-02");
+  });
+
+  it("should generate archive filename correctly", () => {
+    expect(getArchiveFilename("2024-12")).toBe("2024-12-archive.tar.gz");
+    expect(getArchiveFilename("2024-12-03")).toBe("2024-12-03-archive.tar.gz");
+    expect(getArchiveFilename("2024-12-03~10")).toBe("2024-12-03~10-archive.tar.gz");
+  });
+
+  it("should extract file period for monthly frequency", () => {
+    expect(getFilePeriod("2024-12-03.log", "monthly")).toBe("2024-12");
+    expect(getFilePeriod("2024-12-03~10.log", "monthly")).toBe("2024-12");
+    expect(getFilePeriod("2024-12-03~10-30-45.log", "monthly")).toBe("2024-12");
+  });
+
+  it("should extract file period for daily frequency", () => {
+    expect(getFilePeriod("2024-12-03.log", "daily")).toBe("2024-12-03");
+    expect(getFilePeriod("2024-12-03~10.log", "daily")).toBe("2024-12-03");
+    expect(getFilePeriod("2024-12-03~10-30-45.log", "daily")).toBe("2024-12-03");
+  });
+
+  it("should extract file period for hourly frequency", () => {
+    expect(getFilePeriod("2024-12-03~10.log", "hourly")).toBe("2024-12-03~10");
+    expect(getFilePeriod("2024-12-03~10-30-45.log", "hourly")).toBe("2024-12-03~10");
+    // Daily file archived hourly falls back to ~00
+    expect(getFilePeriod("2024-12-03.log", "hourly")).toBe("2024-12-03~00");
+  });
+
+  it("should extract file period for weekly frequency", () => {
+    // Dec 4, 2024 (Wednesday) -> Monday Dec 2, 2024
+    expect(getFilePeriod("2024-12-04.log", "weekly")).toBe("2024-12-02");
+    expect(getFilePeriod("2024-12-04~10.log", "weekly")).toBe("2024-12-02");
+  });
+
+  it("should return null for invalid filenames", () => {
+    expect(getFilePeriod("invalid.log", "monthly")).toBeNull();
+    expect(getFilePeriod("not-a-date.log", "daily")).toBeNull();
+  });
+
+  it("should get current period for each frequency", () => {
+    const testDate = new Date(2024, 11, 4, 14, 30, 0); // Dec 4, 2024 14:30:00
+
+    expect(getCurrentPeriod(testDate, "hourly")).toBe("2024-12-04~14");
+    expect(getCurrentPeriod(testDate, "daily")).toBe("2024-12-04");
+    expect(getCurrentPeriod(testDate, "weekly")).toBe("2024-12-02"); // Monday
+    expect(getCurrentPeriod(testDate, "monthly")).toBe("2024-12");
+  });
+});
+
+describe("Filename Parsing Utility Functions", () => {
+  it("should parse daily log filenames", () => {
+    const result = parseLogFilename("2024-12-03.log");
+    expect(result).not.toBeNull();
+    expect(result?.getFullYear()).toBe(2024);
+    expect(result?.getMonth()).toBe(11); // December (0-indexed)
+    expect(result?.getDate()).toBe(3);
+  });
+
+  it("should parse hourly log filenames", () => {
+    const result = parseLogFilename("2024-12-03~14.log");
+    expect(result).not.toBeNull();
+    expect(result?.getFullYear()).toBe(2024);
+    expect(result?.getMonth()).toBe(11);
+    expect(result?.getDate()).toBe(3);
+    expect(result?.getHours()).toBe(14);
+  });
+
+  it("should parse overflow log filenames", () => {
+    const result = parseLogFilename("2024-12-03~14-30-45.log");
+    expect(result).not.toBeNull();
+    expect(result?.getFullYear()).toBe(2024);
+    expect(result?.getMonth()).toBe(11);
+    expect(result?.getDate()).toBe(3);
+    expect(result?.getHours()).toBe(14);
+  });
+
+  it("should return null for invalid log filenames", () => {
+    expect(parseLogFilename("invalid.log")).toBeNull();
+    expect(parseLogFilename("not-a-date.log")).toBeNull();
+  });
+
+  it("should parse monthly archive filenames", () => {
+    const result = parseArchiveFilename("2024-12-archive.tar.gz");
+    expect(result).not.toBeNull();
+    expect(result?.getFullYear()).toBe(2024);
+    expect(result?.getMonth()).toBe(11);
+    expect(result?.getDate()).toBe(1); // First day of month
+  });
+
+  it("should parse daily archive filenames", () => {
+    const result = parseArchiveFilename("2024-12-03-archive.tar.gz");
+    expect(result).not.toBeNull();
+    expect(result?.getFullYear()).toBe(2024);
+    expect(result?.getMonth()).toBe(11);
+    expect(result?.getDate()).toBe(3);
+  });
+
+  it("should parse hourly archive filenames", () => {
+    const result = parseArchiveFilename("2024-12-03~14-archive.tar.gz");
+    expect(result).not.toBeNull();
+    expect(result?.getFullYear()).toBe(2024);
+    expect(result?.getMonth()).toBe(11);
+    expect(result?.getDate()).toBe(3);
+    expect(result?.getHours()).toBe(14);
+  });
+
+  it("should parse archive filenames with counter suffix", () => {
+    const result = parseArchiveFilename("2024-12-archive-1.tar.gz");
+    expect(result).not.toBeNull();
+    expect(result?.getFullYear()).toBe(2024);
+    expect(result?.getMonth()).toBe(11);
+  });
+
+  it("should return null for invalid archive filenames", () => {
+    expect(parseArchiveFilename("invalid-archive.tar.gz")).toBeNull();
+    expect(parseArchiveFilename("not-a-date.tar.gz")).toBeNull();
+  });
+});
+
+describe("Cutoff Date Utility Function", () => {
+  const baseDate = new Date(2024, 11, 15, 12, 0, 0); // Dec 15, 2024 12:00
+
+  it("should calculate cutoff for hours", () => {
+    const cutoff = getCutoffDate(baseDate, 6, "h");
+    expect(cutoff.getHours()).toBe(6); // 12 - 6 = 6
+    expect(cutoff.getDate()).toBe(15);
+  });
+
+  it("should calculate cutoff for days", () => {
+    const cutoff = getCutoffDate(baseDate, 10, "d");
+    expect(cutoff.getDate()).toBe(5); // 15 - 10 = 5
+    expect(cutoff.getMonth()).toBe(11);
+  });
+
+  it("should calculate cutoff for weeks", () => {
+    const cutoff = getCutoffDate(baseDate, 2, "w");
+    expect(cutoff.getDate()).toBe(1); // 15 - 14 = 1
+    expect(cutoff.getMonth()).toBe(11);
+  });
+
+  it("should calculate cutoff for months", () => {
+    const cutoff = getCutoffDate(baseDate, 3, "m");
+    expect(cutoff.getMonth()).toBe(8); // December(11) - 3 = September(8)
+    expect(cutoff.getFullYear()).toBe(2024);
+  });
+
+  it("should calculate cutoff for years", () => {
+    const cutoff = getCutoffDate(baseDate, 2, "y");
+    expect(cutoff.getFullYear()).toBe(2022); // 2024 - 2 = 2022
+    expect(cutoff.getMonth()).toBe(11);
+  });
+
+  it("should handle month boundary correctly", () => {
+    const janDate = new Date(2024, 0, 15); // Jan 15, 2024
+    const cutoff = getCutoffDate(janDate, 2, "m");
+    expect(cutoff.getMonth()).toBe(10); // November 2023
+    expect(cutoff.getFullYear()).toBe(2023);
+  });
+});
+
+describe("File Exists Utility Function", () => {
+  it("should return true for existing file", async () => {
+    const logDir = getTestLogDir("util-exists");
+    await fs.mkdir(logDir, { recursive: true });
+    const testFile = path.join(logDir, "test.txt");
+    await fs.writeFile(testFile, "test");
+
+    expect(await fileExists(testFile)).toBe(true);
+  });
+
+  it("should return false for non-existing file", async () => {
+    expect(await fileExists("/path/to/nonexistent/file.txt")).toBe(false);
+  });
 });
 
 /**
@@ -412,23 +821,30 @@ const createCopyOfTodayFileMinusXDays = async (logDir: string, x = 31) => {
 
   // Check if today's file exists, if not create one
   const files = await fs.readdir(logDir);
-  let sourceFile = files.find(f => f.endsWith(".log"));
+  let sourceFile = files.find((f) => f.endsWith(".log"));
 
   if (!sourceFile) {
     // Create a minimal log file for today
     const todayFilePath = path.join(logDir, todayFile);
-    await fs.writeFile(todayFilePath, `{"level":"info","time":"${new Date().toISOString()}","msg":"test"}\n`);
+    await fs.writeFile(
+      todayFilePath,
+      `{"level":"info","time":"${new Date().toISOString()}","msg":"test"}\n`,
+    );
     sourceFile = todayFile;
   }
 
   const sourceDate = sourceFile.split(".")[0];
   // create a new file for the previous month (-x days)
-  const previousMonthDate = new Date(new Date(sourceDate).setDate(new Date(sourceDate).getDate() - x)).toISOString().slice(0, 10);
+  const previousMonthDate = new Date(
+    new Date(sourceDate).setDate(new Date(sourceDate).getDate() - x),
+  )
+    .toISOString()
+    .slice(0, 10);
   // copy the source file to the previous month date
   await fs.copyFile(path.join(logDir, sourceFile), path.join(logDir, `${previousMonthDate}.log`));
 
   const filesAfter = await fs.readdir(logDir);
-  const previousMonthFile = filesAfter.find(f => f.startsWith(previousMonthDate));
+  const previousMonthFile = filesAfter.find((f) => f.startsWith(previousMonthDate));
   expect(previousMonthFile).toBeDefined();
   return previousMonthDate;
 };

@@ -10,22 +10,24 @@ export function internalCreateLogger({
   toConsole,
   toFile,
   pinoOptions,
+  fileRotationFrequency,
   flushInterval,
   maxBufferLines,
   maxBufferKilobytes,
-  maxDailyLogSizeMegabytes,
+  maxLogSizeMegabytes,
 }: Required<Omit<BaseLoggerOptions, "pinoOptions"> & FileWriterOptions> & {
   pinoOptions?: CustomPinoOptions;
 }) {
-  // daily rotating file writer (object with write)
+  // Rotating file writer (object with write)
   // Use registry to ensure singleton writer per directory (only if writing to file)
   const fileWriter = toFile
     ? getOrCreateFileWriter({
         logDir,
+        fileRotationFrequency,
         flushInterval,
         maxBufferLines,
         maxBufferKilobytes,
-        maxDailyLogSizeMegabytes,
+        maxLogSizeMegabytes,
       })
     : null;
 

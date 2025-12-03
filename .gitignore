@@ -36,3 +36,6 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # Benchmark results
 tests/benchmark-results.txt
+
+# Personal notes
+notes.md

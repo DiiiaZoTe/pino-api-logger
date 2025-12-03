@@ -4,6 +4,24 @@ import type { PrettyOptions } from "pino-pretty";
 /** Pino options that can be customized by the user (transport is managed internally) */
 export type CustomPinoOptions = Omit<pino.LoggerOptions, "transport">;
 
+/** File rotation frequency options */
+export type FileRotationFrequency = "hourly" | "daily";
+
+/** Archive frequency options */
+export type ArchiveFrequency = "hourly" | "daily" | "weekly" | "monthly";
+
+/** Retention unit options */
+export type RetentionUnit = "h" | "d" | "w" | "m" | "y";
+
+/** Retention format options */
+export type RetentionFormat = `${number}${RetentionUnit}`;
+
+/** Parsed retention value */
+export type ParsedRetention = {
+  value: number;
+  unit: RetentionUnit;
+};
+
 /**
  * Type-safe output configuration that ensures at least one output (file or console) is enabled.
  * - If `toFile` is false, `toConsole` must be true or omitted (defaults to true)
@@ -15,17 +33,20 @@ export type OutputConfig =
 
 export type LoggerOptions = Omit<BaseLoggerOptions, "toFile" | "toConsole"> &
   FileWriterOptions &
-  MonthlyArchiverOptions &
+  ArchiverOptions &
+  RetentionOptions &
   OutputConfig;
-/** pinoOptions remains optional as it's user-provided overrides */
-export type RequiredLoggerOptions = Required<Omit<LoggerOptions, "pinoOptions">> &
-  Pick<LoggerOptions, "pinoOptions">;
+/** pinoOptions and logRetention remain optional */
+export type RequiredLoggerOptions = Required<Omit<LoggerOptions, "pinoOptions" | "logRetention">> &
+  Pick<LoggerOptions, "pinoOptions" | "logRetention">;
 export type LoggerWithArchiverOptions = RequiredLoggerOptions & {
   logger: pino.Logger;
 };
 export type PinoLoggerExtended = pino.Logger<never, boolean> & {
   stopArchiver: () => void;
   startArchiver: () => void;
+  stopRetention: () => void;
+  startRetention: () => void;
   getParams: () => RequiredLoggerOptions;
   close: () => Promise<void>;
 };
@@ -75,6 +96,13 @@ export type BaseLoggerOptions = {
 export type FileWriterOptions = {
   /** The directory to write the logs to from the root of process execution. */
   logDir?: string;
+  /**
+   * The frequency at which log files rotate.
+   * - "daily": Creates files like `YYYY-MM-DD.log`
+   * - "hourly": Creates files like `YYYY-MM-DD~HH.log`
+   * @default "daily"
+   */
+  fileRotationFrequency?: FileRotationFrequency;
   /** The interval to flush the log buffer at in milliseconds.
    * @default 200 (minimum 20 -> 20ms flush interval)
    */
@@ -87,19 +115,26 @@ export type FileWriterOptions = {
    * @default 1024 (1MB)
    */
   maxBufferKilobytes?: number;
-  /** The maximum size of the daily log file in megabytes.
+  /**
+   * The maximum size of the log file per rotation period in megabytes.
+   * When exceeded, an overflow file is created with timestamp suffix.
    * @default 100 (100MB)
    */
-  maxDailyLogSizeMegabytes?: number;
+  maxLogSizeMegabytes?: number;
 };
 
-export type MonthlyArchiverOptions = {
+export type ArchiverOptions = {
   /** The directory to write the logs to from the root of process execution. */
   logDir?: string;
-  /** The cron schedule to run the archive function.
-   * @default '0 1 1 * *' (At 01:00 on day-of-month 1)
+  /**
+   * The frequency at which logs are archived.
+   * - "hourly": Archives accumulated hourly log files
+   * - "daily": Archives accumulated daily log files
+   * - "weekly": Archives accumulated weekly log files (Monday-based weeks)
+   * - "monthly": Archives accumulated monthly log files
+   * @default "monthly"
    */
-  archiveCron?: string;
+  archiveFrequency?: ArchiveFrequency;
   /** Whether to run the archive function immediately on logger creation.
    * @default true
    */
@@ -119,4 +154,27 @@ export type MonthlyArchiverOptions = {
    * @default false
    */
   disableArchiving?: boolean;
+};
+
+export type RetentionOptions = {
+  /** The directory to write the logs to from the root of process execution. */
+  logDir?: string;
+  /**
+   * Log retention period. Deletes both raw log files and archives older than this period.
+   * Format: <number><unit> where unit is:
+   * - "h" (hours): Check at top of every hour, rolling hours
+   * - "d" (days): Check daily at 1 AM, rolling days
+   * - "w" (weeks): Check weekly on Monday at 1 AM, rolling weeks
+   * - "m" (months): Check on 1st of month at 1 AM, calendar months
+   * - "y" (years): Check on Jan 1st at 1 AM, calendar years
+   *
+   * Examples: "12h", "7d", "2w", "3m", "1y"
+   *
+   * The unit determines check frequency:
+   * - "90d" = rolling 90 days, checked daily
+   * - "3m" = calendar-based 3 months, checked monthly
+   *
+   * @default undefined (no retention - logs kept indefinitely)
+   */
+  logRetention?: RetentionFormat;
 };

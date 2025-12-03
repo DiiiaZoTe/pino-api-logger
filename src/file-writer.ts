@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DEFAULT_PACKAGE_NAME } from "./config";
-import type { FileWriterOptions } from "./types";
+import type { FileRotationFrequency, FileWriterOptions } from "./types";
 
 type WriterState = "Idle" | "Flushing" | "Rotating" | "FlushingAndRotating";
 
@@ -81,17 +81,18 @@ export class FlushRotateState {
 
 export class FileWriter {
   private logDir: string;
+  private fileRotationFrequency: FileRotationFrequency;
   private flushInterval: number;
   private maxBufferLines: number;
   private maxBufferKilobytes: number;
-  private maxDailyLogSizeMegabytes: number;
+  private maxLogSizeMegabytes: number;
   private maxBufferBytes: number;
-  private maxDailyLogSizeBytes: number;
+  private maxLogSizeBytes: number;
 
   private buffer: string[] = [];
   private bufferBytes = 0;
 
-  private currentDate: string = "";
+  private currentPeriod: string = "";
   private stream: fs.WriteStream | undefined = undefined;
   private flushTimer!: NodeJS.Timeout;
   private isEnabled: boolean = true; // true if the writer is enabled, false if it is disabled due to an error
@@ -106,12 +107,13 @@ export class FileWriter {
 
   constructor(opts: Required<FileWriterOptions>) {
     this.logDir = opts.logDir;
+    this.fileRotationFrequency = opts.fileRotationFrequency;
     this.flushInterval = opts.flushInterval;
     this.maxBufferLines = opts.maxBufferLines;
     this.maxBufferKilobytes = opts.maxBufferKilobytes;
-    this.maxDailyLogSizeMegabytes = opts.maxDailyLogSizeMegabytes;
+    this.maxLogSizeMegabytes = opts.maxLogSizeMegabytes;
     this.maxBufferBytes = this.maxBufferKilobytes * 1024;
-    this.maxDailyLogSizeBytes = this.maxDailyLogSizeMegabytes * 1024 * 1024;
+    this.maxLogSizeBytes = this.maxLogSizeMegabytes * 1024 * 1024;
 
     // Safety: fs.mkdirSync can throw
     try {
@@ -123,7 +125,7 @@ export class FileWriter {
       return;
     }
 
-    this.currentDate = this.getDateString();
+    this.currentPeriod = this.getPeriodString();
     this.openStream(this.getInitialLogPath());
 
     this.flushTimer = setInterval(() => this.flushIfNeeded(), this.flushInterval);
@@ -135,6 +137,13 @@ export class FileWriter {
    * Used when multiple loggers share the same writer.
    */
   updateOptions(opts: Required<FileWriterOptions>) {
+    // Update rotation frequency: hourly wins over daily (strictest)
+    if (opts.fileRotationFrequency === "hourly" && this.fileRotationFrequency === "daily") {
+      this.fileRotationFrequency = "hourly";
+      // When switching to hourly, update current period format
+      this.currentPeriod = this.getPeriodString();
+    }
+
     // Update flush interval to the minimum (fastest)
     if (opts.flushInterval < this.flushInterval) {
       this.flushInterval = opts.flushInterval;
@@ -153,9 +162,9 @@ export class FileWriter {
     }
 
     // Update max file size to the minimum (safest to prevent giant files)
-    if (opts.maxDailyLogSizeMegabytes < this.maxDailyLogSizeMegabytes) {
-      this.maxDailyLogSizeMegabytes = opts.maxDailyLogSizeMegabytes;
-      this.maxDailyLogSizeBytes = this.maxDailyLogSizeMegabytes * 1024 * 1024;
+    if (opts.maxLogSizeMegabytes < this.maxLogSizeMegabytes) {
+      this.maxLogSizeMegabytes = opts.maxLogSizeMegabytes;
+      this.maxLogSizeBytes = this.maxLogSizeMegabytes * 1024 * 1024;
     }
   }
 
@@ -189,12 +198,25 @@ export class FileWriter {
     });
   }
 
-  private getDateString() {
-    return new Date().toISOString().slice(0, 10);
+  /**
+   * Get the current period string based on rotation frequency.
+   * - Daily: YYYY-MM-DD
+   * - Hourly: YYYY-MM-DD~HH
+   */
+  private getPeriodString(): string {
+    const now = new Date();
+    const date = now.toISOString().slice(0, 10); // YYYY-MM-DD
+
+    if (this.fileRotationFrequency === "hourly") {
+      const hour = String(now.getHours()).padStart(2, "0");
+      return `${date}~${hour}`;
+    }
+
+    return date;
   }
 
-  private getLogPath(date: string) {
-    return path.join(this.logDir, `${date}.log`);
+  private getLogPath(period: string) {
+    return path.join(this.logDir, `${period}.log`);
   }
 
   /** Check if a file exists */
@@ -208,17 +230,20 @@ export class FileWriter {
   }
 
   /**
-   * Generate candidate overflow filenames for the current date.
+   * Generate candidate overflow filenames for the current period.
+   * Overflow files use full timestamp: YYYY-MM-DD~HH-mm-ss
    * Prefer HH-mm-ss; only add millisecond (and counter) when collisions occur.
    */
   private *generateOverflowCandidates(): Generator<string> {
     const now = new Date();
+    const date = now.toISOString().slice(0, 10);
     const hh = String(now.getHours()).padStart(2, "0");
     const mm = String(now.getMinutes()).padStart(2, "0");
     const ss = String(now.getSeconds()).padStart(2, "0");
     const ms = String(now.getMilliseconds()).padStart(3, "0");
 
-    const baseName = `${this.currentDate}~${hh}-${mm}-${ss}`;
+    // Overflow always uses full timestamp format: YYYY-MM-DD~HH-mm-ss
+    const baseName = `${date}~${hh}-${mm}-${ss}`;
 
     // First candidate: just timestamp
     yield path.join(this.logDir, `${baseName}.log`);
@@ -253,16 +278,32 @@ export class FileWriter {
   }
 
   /**
+   * Get regex pattern to match overflow files for the current period.
+   * Overflow files always have format: YYYY-MM-DD~HH-mm-ss*.log
+   */
+  private getOverflowPattern(): RegExp {
+    if (this.fileRotationFrequency === "hourly") {
+      // For hourly, match overflow files for the current hour
+      // currentPeriod is YYYY-MM-DD~HH, overflow is YYYY-MM-DD~HH-mm-ss
+      const [date, hour] = this.currentPeriod.split("~");
+      return new RegExp(`^${date}~${hour}-\\d{2}-\\d{2}.*\\.log$`);
+    }
+    // For daily, match any overflow file for the current date
+    // currentPeriod is YYYY-MM-DD, overflow is YYYY-MM-DD~HH-mm-ss
+    return new RegExp(`^${this.currentPeriod}~\\d{2}-\\d{2}-\\d{2}.*\\.log$`);
+  }
+
+  /**
    * Determine the correct log file path on startup.
    * Checks main log file first, then looks for existing overflow files with space.
    */
   private getInitialLogPath(): string {
-    const mainLogPath = this.getLogPath(this.currentDate);
+    const mainLogPath = this.getLogPath(this.currentPeriod);
 
     // Check main log file size
     try {
       const stats = fs.statSync(mainLogPath);
-      if (stats.size < this.maxDailyLogSizeBytes) {
+      if (stats.size < this.maxLogSizeBytes) {
         return mainLogPath; // Main log has space
       }
     } catch {
@@ -270,7 +311,7 @@ export class FileWriter {
     }
 
     // Main log is full, look for the most recent overflow file with space
-    const overflowPattern = new RegExp(`^${this.currentDate}~\\d{2}-\\d{2}-\\d{2}.*\\.log$`);
+    const overflowPattern = this.getOverflowPattern();
     const overflowFiles = fs
       .readdirSync(this.logDir)
       .filter((f) => overflowPattern.test(f))
@@ -282,7 +323,7 @@ export class FileWriter {
       const mostRecentPath = path.join(this.logDir, mostRecent);
       try {
         const stats = fs.statSync(mostRecentPath);
-        if (stats.size < this.maxDailyLogSizeBytes) {
+        if (stats.size < this.maxLogSizeBytes) {
           return mostRecentPath; // Most recent overflow has space
         }
       } catch {
@@ -300,11 +341,11 @@ export class FileWriter {
     const line = msg.endsWith("\n") ? msg : `${msg}\n`;
     const lineBytes = Buffer.byteLength(line, "utf8");
 
-    // Check rotation by day
-    const today = this.getDateString();
-    if (today !== this.currentDate) {
+    // Check rotation by period (day or hour depending on frequency)
+    const currentPeriod = this.getPeriodString();
+    if (currentPeriod !== this.currentPeriod) {
       this.requestRotation();
-    } else if (this.currentFileSizeBytes + lineBytes >= this.maxDailyLogSizeBytes) {
+    } else if (this.currentFileSizeBytes + lineBytes >= this.maxLogSizeBytes) {
       this.requestRotation();
     }
 
@@ -390,13 +431,15 @@ export class FileWriter {
 
     this.stream?.end();
 
+    // Update to current period
+    this.currentPeriod = this.getPeriodString();
+
     // Determine next filename
-    let newPath = this.getLogPath(this.currentDate);
+    let newPath = this.getLogPath(this.currentPeriod);
     if (fs.existsSync(newPath)) {
       newPath = await this.getOverflowLogPath();
     }
 
-    this.currentDate = this.getDateString();
     // Use the helper that attaches the error listener
     this.openStream(newPath);
   }
@@ -415,12 +458,13 @@ export class FileWriter {
   public getInstanceOptions() {
     return {
       logDir: this.logDir,
+      fileRotationFrequency: this.fileRotationFrequency,
       flushInterval: this.flushInterval,
       maxBufferLines: this.maxBufferLines,
       maxBufferKilobytes: this.maxBufferKilobytes,
-      maxDailyLogSizeMegabytes: this.maxDailyLogSizeMegabytes,
+      maxLogSizeMegabytes: this.maxLogSizeMegabytes,
       maxBufferBytes: this.maxBufferBytes,
-      maxDailyLogSizeBytes: this.maxDailyLogSizeBytes,
+      maxLogSizeBytes: this.maxLogSizeBytes,
     };
   }
 }

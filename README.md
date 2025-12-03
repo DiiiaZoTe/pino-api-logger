@@ -1,13 +1,23 @@
 # pino-api-logger
 
-A self-hosted, server-side API logger built on top of [Pino](https://github.com/pinojs/pino) with multi-stream writing, daily rotation, buffered writes, and monthly archiving. Designed for Node.js and Bun projects.
+A self-hosted, server-side API logger built on top of [Pino](https://github.com/pinojs/pino) with multi-stream writing, configurable rotation frequencies, buffered writes, flexible archiving, and log retention. Designed for Node.js and Bun projects.
+
+## v2.0 Breaking Changes
+
+Version 2.0 introduces several new features and breaking changes:
+
+- **`archiveCron` removed** — Replaced by `archiveFrequency` which automatically determines the cron schedule
+- **`maxDailyLogSizeMegabytes` renamed** — Now called `maxLogSizeMegabytes` (applies per rotation period)
+- **New options** — `fileRotationFrequency`, `archiveFrequency`, `logRetention`
+- **Constraint validation** — Invalid configuration combinations now throw errors at logger creation
 
 ## Features
 
 - 🚀 **High Performance** — Built on Pino, one of the fastest Node.js loggers
-- 📁 **Daily Log Rotation** — Automatically rotates logs at midnight
+- 📁 **Configurable Log Rotation** — Daily or hourly rotation frequency
 - 📦 **Buffered Writes** — Configurable buffer size and flush interval for optimized I/O
-- 🗜️ **Monthly Archiving** — Automatically compresses old logs into `.tar.gz` archives
+- 🗜️ **Flexible Archiving** — Archive logs hourly, daily, weekly, or monthly
+- 🧹 **Log Retention** — Automatically delete old logs and archives based on retention policy
 - 🖥️ **Multi-Stream Output** — Writes to both console (with pretty printing) and file simultaneously
 - 📏 **Max File Size Rotation** — Rotates logs when they exceed a configurable size limit
 - 🔄 **Singleton Pattern** — Ensures one file writer per log directory, even with multiple logger instances
@@ -25,8 +35,8 @@ This package provides **sensible defaults** for a production-ready logging setup
 
 **Managed internally (cannot be overridden):**
 - Transport configuration (multi-stream to file + console)
-- Daily rotation and buffered writes (when `toFile: true`)
-- Monthly archiving (when `toFile: true`)
+- File rotation and buffered writes (when `toFile: true`)
+- Archiving and retention scheduling
 
 ## Installation
 
@@ -83,18 +93,22 @@ const logger = createLogger({
     // ... any other pino.LoggerOptions (except transport)
   },
 
-  // File writer options
-  flushInterval: 200,             // Buffer flush interval in ms (default: 200, min: 20)
-  maxBufferLines: 500,            // Max lines to buffer before flush (default: 500, min: 1)
-  maxBufferKilobytes: 1024,       // Max KB to buffer before flush (default: 1024)
-  maxDailyLogSizeMegabytes: 100,  // Max log file size before rotation (default: 100MB)
+  // File rotation options
+  fileRotationFrequency: "daily",  // "hourly" | "daily" (default: "daily")
+  flushInterval: 200,              // Buffer flush interval in ms (default: 200, min: 20)
+  maxBufferLines: 500,             // Max lines to buffer before flush (default: 500, min: 1)
+  maxBufferKilobytes: 1024,        // Max KB to buffer before flush (default: 1024)
+  maxLogSizeMegabytes: 100,        // Max log file size before overflow (default: 100MB)
 
-  // Monthly archiver options
-  archiveCron: "0 1 1 * *",       // Cron schedule for archiving, if any needed (default: 1st of month at 01:00)
-  runArchiveOnCreation: true,     // Run archive check on logger creation (default: true)
-  archiveDir: "archives",         // Archive directory relative to logDir (default: "archives")
-  archiveLogging: true,           // Log archive operations (default: true)
-  disableArchiving: false,        // Completely disable archiving (default: false)
+  // Archiver options
+  archiveFrequency: "monthly",     // "hourly" | "daily" | "weekly" | "monthly" (default: "monthly")
+  runArchiveOnCreation: true,      // Run archive check on logger creation (default: true)
+  archiveDir: "archives",          // Archive directory relative to logDir (default: "archives")
+  archiveLogging: true,            // Log archive operations (default: true)
+  disableArchiving: false,         // Completely disable archiving (default: false)
+
+  // Retention options
+  logRetention: "30d",             // Delete logs/archives older than this (default: undefined)
 });
 ```
 
@@ -107,16 +121,53 @@ const logger = createLogger({
 | `toFile` | `boolean` | `true` | Write logs to file. This is the default if both `toFile` or `toConsole` are set to false |
 | `toConsole` | `boolean` | `true` | Enable console output via pino-pretty (False recommended in Production if you don't have a need to drain logs) |
 | `pinoPretty` | `PrettyOptions` | See below | pino-pretty configuration |
-| `pinoOptions` | `CustomPinoOptions` | `undefined` | Custom Pino options to override defaults (see below) |
+| `pinoOptions` | `CustomPinoOptions` | `undefined` | Custom Pino options to override defaults |
+| `fileRotationFrequency` | `"hourly" \| "daily"` | `"daily"` | How often to rotate log files |
 | `flushInterval` | `number` | `200` | Buffer flush interval (ms) |
 | `maxBufferLines` | `number` | `500` | Max buffered lines before flush |
 | `maxBufferKilobytes` | `number` | `1024` | Max buffered KB before flush |
-| `maxDailyLogSizeMegabytes` | `number` | `100` | Max file size before rotation |
-| `archiveCron` | `string` | `"0 1 1 * *"` | Cron expression for archiving. Check + run archive if any needed |
+| `maxLogSizeMegabytes` | `number` | `100` | Max file size before overflow rotation |
+| `archiveFrequency` | `"hourly" \| "daily" \| "weekly" \| "monthly"` | `"monthly"` | How often to archive logs |
 | `runArchiveOnCreation` | `boolean` | `true` | Archive needed files immediately on startup |
 | `archiveDir` | `string` | `"archives"` | Archive output directory |
 | `archiveLogging` | `boolean` | `true` | Log archiver operations |
 | `disableArchiving` | `boolean` | `false` | Completely disable the archiving process |
+| `logRetention` | `string` | `undefined` | Retention period (e.g., "7d", "3m", "1y") |
+
+### Log Retention Format
+
+The `logRetention` option accepts a string in the format `<number><unit>`:
+
+| Unit | Description | Example |
+|------|-------------|---------|
+| `h` | Hours (rolling, checked hourly) | `"24h"` |
+| `d` | Days (rolling, checked daily) | `"7d"`, `"90d"` |
+| `w` | Weeks (rolling, checked weekly) | `"2w"` |
+| `m` | Months (calendar-based, checked monthly) | `"3m"` |
+| `y` | Years (calendar-based, checked yearly) | `"1y"` |
+
+The unit determines the check frequency:
+- `"90d"` = rolling 90 days, checked daily at 1 AM
+- `"3m"` = calendar-based 3 months, checked on 1st of month at 1 AM
+
+### Constraint Hierarchy
+
+The following constraints are enforced at logger creation:
+
+```
+logRetention >= archiveFrequency >= fileRotationFrequency
+```
+
+**Examples:**
+
+✅ Valid configurations:
+- `fileRotationFrequency: "hourly"` + `archiveFrequency: "daily"` + `logRetention: "7d"`
+- `fileRotationFrequency: "daily"` + `archiveFrequency: "monthly"` + `logRetention: "100d"`
+
+❌ Invalid configurations:
+- `fileRotationFrequency: "daily"` + `archiveFrequency: "hourly"` (can't archive incomplete days)
+- `archiveFrequency: "monthly"` + `logRetention: "1w"` (1 week < 1 month)
+- `fileRotationFrequency: "daily"` + `logRetention: "12h"` (can't delete mid-day)
 
 ### Default pino-pretty Options
 
@@ -181,7 +232,7 @@ const logger = createLogger({ pinoOptions });
 
 ### `createLogger(options?)`
 
-Creates a Pino logger with file writing and monthly archiving.
+Creates a Pino logger with file writing, archiving, and retention support.
 
 ```typescript
 const logger = createLogger({
@@ -192,14 +243,16 @@ const logger = createLogger({
 
 Returns a Pino logger with additional methods:
 
-- **`logger.stopArchiver()`** — Stops the monthly archiver cron job
-- **`logger.startArchiver()`** — Starts the monthly archiver (useful when `disableArchiving: true` was set)
+- **`logger.stopArchiver()`** — Stops the archiver cron job
+- **`logger.startArchiver()`** — Starts the archiver (useful when `disableArchiving: true` was set)
+- **`logger.stopRetention()`** — Stops the retention cron job
+- **`logger.startRetention()`** — Starts the retention scheduler
 - **`logger.close()`** — Flushes the buffer and closes the file writer stream (async)
 - **`logger.getParams()`** — Returns the resolved logger configuration
 
 ### `resetLogRegistry()`
 
-Resets the internal registry by closing all file writers and stopping all archivers. Useful for testing.
+Resets the internal registry by closing all file writers and stopping all archivers and retention schedulers. Useful for testing.
 
 ```typescript
 import { resetLogRegistry } from "pino-api-logger";
@@ -209,9 +262,9 @@ afterEach(async () => {
 });
 ```
 
-### `startMonthlyArchiver(options)`
+### `startArchiver(options)`
 
-Manually start a monthly archiver. Typically not needed as `createLogger` handles this automatically.
+Manually start an archiver. Typically not needed as `createLogger` handles this automatically.
 
 ### `getOrCreateFileWriter(options)`
 
@@ -219,15 +272,38 @@ Get or create a file writer for a specific log directory. Uses singleton pattern
 
 ## Log File Structure
 
+### Daily Rotation (default)
+
 ```
 logs/
-├── 2025-01-01.log           # Yesterday's log
+├── 2025-01-01.log           # Daily log file
 ├── 2025-01-01~15-59-59.log  # Overflow file (when max size exceeded)
-├── 2025-01-01.log           # Today's log file
+├── 2025-01-02.log           # Today's log file
 └── archives/
-    ├── 2023-12.tar.gz       # Archived December logs
-    └── 2023-11.tar.gz       # Archived November logs
+    ├── 2024-12-archive.tar.gz    # Monthly archive
+    └── 2024-11-archive.tar.gz
 ```
+
+### Hourly Rotation
+
+```
+logs/
+├── 2025-01-01~00.log        # Hourly log file (midnight hour)
+├── 2025-01-01~01.log        # Hourly log file (1 AM hour)
+├── 2025-01-01~15-30-00.log  # Overflow file (when max size exceeded)
+└── archives/
+    ├── 2025-01-01-archive.tar.gz  # Daily archive (when archiveFrequency: "daily")
+    └── 2024-12-archive.tar.gz     # Monthly archive
+```
+
+### Archive Naming Convention
+
+| archiveFrequency | Archive Name Format |
+|------------------|---------------------|
+| `"hourly"` | `YYYY-MM-DD~HH-archive.tar.gz` |
+| `"daily"` | `YYYY-MM-DD-archive.tar.gz` |
+| `"weekly"` | `YYYY-MM-DD-archive.tar.gz` (Monday date) |
+| `"monthly"` | `YYYY-MM-archive.tar.gz` |
 
 ### Log Format
 
@@ -281,6 +357,27 @@ app.use("*", async (c, next) => {
 });
 ```
 
+### Hourly Rotation with Daily Archiving
+
+```typescript
+const logger = createLogger({
+  fileRotationFrequency: "hourly",  // Rotate logs every hour
+  archiveFrequency: "daily",        // Archive accumulated hourly logs daily
+  logRetention: "7d",               // Keep logs for 7 days
+});
+```
+
+### High-Volume Logging with Retention
+
+```typescript
+const logger = createLogger({
+  fileRotationFrequency: "hourly",
+  archiveFrequency: "hourly",
+  logRetention: "24h",              // Only keep last 24 hours of logs
+  maxLogSizeMegabytes: 50,          // Smaller files for faster processing
+});
+```
+
 ### Child Loggers
 
 ```typescript
@@ -292,7 +389,7 @@ userLogger.info({ userId: 123 }, "User created");
 
 // Note that the child logger does not have the new properties of the parent like:
 // - getting the params
-// - stop/start the archive
+// - stop/start the archive/retention
 // - ...
 
 // Logs: {"level":"info","service":"user-service","userId":123,"msg":"User created"}
@@ -306,6 +403,7 @@ const logger = createLogger();
 process.on("SIGTERM", () => {
   logger.info("Shutting down gracefully");
   logger.stopArchiver();
+  logger.stopRetention();
   logger.close()
     .then(() => process.exit(0))
     .catch((err) => {
@@ -318,8 +416,11 @@ process.on("SIGTERM", () => {
 ### Disable Archiving / Manual Control
 
 ```typescript
-// Create logger with archiving disabled
-const logger = createLogger({ disableArchiving: true });
+// Create logger with archiving disabled but retention enabled
+const logger = createLogger({ 
+  disableArchiving: true,
+  logRetention: "7d",  // Still deletes old logs
+});
 
 // Start archiving later when needed
 logger.startArchiver();
@@ -334,7 +435,7 @@ logger.startArchiver();
 For development or debugging scenarios where you don't need file output:
 
 ```typescript
-// Console-only logger (no file output, archiving automatically disabled)
+// Console-only logger (no file output, archiving/retention automatically disabled)
 const devLogger = createLogger({
   toFile: false,
   toConsole: true,
@@ -347,7 +448,7 @@ const prodLogger = createLogger({
 });
 ```
 
-**Note:** When `toFile` is `false`, archiving is automatically disabled since there's nothing to archive. At least one of `toFile` or `toConsole` must be `true` - We will enforce `toFile` to be `true` at compile time otherwise.
+**Note:** When `toFile` is `false`, archiving and retention are automatically disabled since there's nothing to archive or retain. At least one of `toFile` or `toConsole` must be `true` - We will enforce `toFile` to be `true` at compile time otherwise.
 
 ### Multiple Loggers, Same Directory
 
@@ -356,15 +457,17 @@ When creating multiple loggers pointing to the same directory, the file writer i
 ```typescript
 const apiLogger = createLogger({ 
   logDir: "logs", 
-  maxBufferLines: 100 
+  maxBufferLines: 100,
+  fileRotationFrequency: "daily",
 });
 
 const dbLogger = createLogger({ 
   logDir: "logs", 
-  maxBufferLines: 50  // This stricter setting will be used
+  maxBufferLines: 50,               // Stricter - will be used
+  fileRotationFrequency: "hourly",  // Stricter - will be used
 });
 
-// Both loggers write to the same file with maxBufferLines: 50
+// Both loggers write to the same file with maxBufferLines: 50 and hourly rotation
 ```
 
 ### Separate Logs by Service/Component
@@ -372,7 +475,7 @@ const dbLogger = createLogger({
 If you need separate log files for different services or components, use subdirectories since this library does not provide a file prefix. This keeps logs isolated:
 
 ```ts
-//Each service gets its own log directory and files:
+// Each service gets its own log directory and files:
 const apiLogger = createLogger({ logDir: "logs/api" });
 const workerLogger = createLogger({ logDir: "logs/worker" });
 const schedulerLogger = createLogger({ logDir: "logs/scheduler" });
@@ -396,7 +499,7 @@ Each subdirectory maintains its own archiving schedule and file rotation indepen
 
 ## Performance
 
-Based on our own benchmarks, the default file writer options (`flushInterval`, `maxBufferLines`, `maxBufferKilobytes`, `maxDailyLogSizeMegabytes`) provide the best performance overall for a normal size load and normal size usage. 
+Based on our own benchmarks, the default file writer options (`flushInterval`, `maxBufferLines`, `maxBufferKilobytes`, `maxLogSizeMegabytes`) provide the best performance overall for a normal size load and normal size usage. 
 The default configuration provides a good balance of performance while maintaining reliable log persistence.
 
 You run your own benchmarks for this by cloning the repository and running:

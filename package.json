@@ -16,7 +16,7 @@
   ],
   "scripts": {
     "build": "bun run clean && bun run build:types && bun run build:compile",
-    "build:compile": "bun build src/index.ts src/run-archiver-worker.ts --outdir dist --target node --packages=external",
+    "build:compile": "bun build src/index.ts src/run-archiver-worker.ts src/run-retention-worker.ts --outdir dist --target node --packages=external",
     "build:types": "tsc --emitDeclarationOnly --project tsconfig.json",
     "test": "bun run build && bun test",
     "benchmark": "bun run build && bun run tests/benchmark.ts",

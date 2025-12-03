@@ -4,87 +4,88 @@ import { workerData } from "node:worker_threads";
 import { c as tar } from "tar";
 import { internalCreateLogger } from "./internal-logger";
 import type { RequiredLoggerOptions } from "./types";
+import { fileExists, getArchiveFilename, getCurrentPeriod, getFilePeriod } from "./utilities";
 
-/** Check if a file exists */
-async function fileExists(filePath: string): Promise<boolean> {
-  try {
-    await fs.access(filePath);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** Compress and archive the previous month's daily logs */
+/**
+ * Compress and archive log files based on the configured archive frequency
+ * @param options - The options for the archiver worker
+ */
 export async function runArchiverWorker(options: RequiredLoggerOptions) {
   try {
     const { logger, close } = internalCreateLogger({
       ...options,
       pinoOptions: {
         ...options.pinoOptions,
-        name: "monthly-archiver-worker",
+        name: "archiver-worker",
       },
     });
 
-    const { logDir, archiveDir, archiveLogging } = options;
+    const { logDir, archiveDir, archiveLogging, archiveFrequency } = options;
 
     try {
-      if (archiveLogging) logger.info(`Running archive worker to check for log files to archive`);
+      if (archiveLogging)
+        logger.info(
+          `Running archive worker (frequency: ${archiveFrequency}) to check for log files to archive`,
+        );
 
       const files = (await fs.readdir(logDir)).filter((f) => f.endsWith(".log"));
       if (files.length === 0) return;
 
       const now = new Date();
-      const currentMonth = now.toISOString().slice(0, 7); // YYYY-MM
-      const filesByMonth: Record<string, string[]> = {};
+      const currentPeriod = getCurrentPeriod(now, archiveFrequency);
+      const filesByPeriod: Record<string, string[]> = {};
 
-      // Group files by month, skip current month
+      // Group files by period, skip current (incomplete) period
       for (const file of files) {
-        const month = file.slice(0, 7); // assumes YYYY-MM-DD.log format
-        if (month === currentMonth) continue;
-        if (!filesByMonth[month]) filesByMonth[month] = [];
-        filesByMonth[month].push(file);
+        const period = getFilePeriod(file, archiveFrequency);
+        if (!period) continue; // Skip files that don't match expected format
+        if (period === currentPeriod) continue; // Skip current period
+        if (!filesByPeriod[period]) filesByPeriod[period] = [];
+        filesByPeriod[period].push(file);
       }
 
-      // stop early if no files to archive
-      if (Object.keys(filesByMonth).length === 0) return;
+      // Stop early if no files to archive
+      if (Object.keys(filesByPeriod).length === 0) {
+        if (archiveLogging) logger.info("No files to archive");
+        return;
+      }
 
-      // create the archive directory if it doesn't exist
+      // Create the archive directory if it doesn't exist
       const archivePath = path.join(logDir, archiveDir);
       if (!(await fileExists(archivePath))) {
         await fs.mkdir(archivePath, { recursive: true });
       }
 
       if (archiveLogging)
-        logger.info(`Found files for ${Object.keys(filesByMonth).length} month(s) to archive`);
+        logger.info(`Found files for ${Object.keys(filesByPeriod).length} period(s) to archive`);
 
-      // Archive each month
-      for (const month of Object.keys(filesByMonth)) {
-        let archiveloggerName = `${month}-archive.tar.gz`;
-        let archiveFullPath = path.join(archivePath, archiveloggerName);
+      // Archive each period
+      for (const period of Object.keys(filesByPeriod).sort()) {
+        let archiveFileName = getArchiveFilename(period);
+        let archiveFullPath = path.join(archivePath, archiveFileName);
         let counter = 1;
 
         // Avoid overwriting existing archive
         while (await fileExists(archiveFullPath)) {
-          archiveloggerName = `${month}-archive-${counter}.tar.gz`;
-          archiveFullPath = path.join(archivePath, archiveloggerName);
+          archiveFileName = `${period}-archive-${counter}.tar.gz`;
+          archiveFullPath = path.join(archivePath, archiveFileName);
           counter++;
         }
 
-        const monthFiles = filesByMonth[month];
-        if (monthFiles.length === 0) continue;
+        const periodFiles = filesByPeriod[period];
+        if (periodFiles.length === 0) continue;
 
         if (archiveLogging)
-          logger.info(`Archiving ${monthFiles.length} files for ${month} → ${archiveloggerName}`);
+          logger.info(`Archiving ${periodFiles.length} files for ${period} → ${archiveFileName}`);
 
         // Create tar.gz
-        await tar({ gzip: true, file: archiveFullPath, cwd: logDir }, monthFiles);
+        await tar({ gzip: true, file: archiveFullPath, cwd: logDir }, periodFiles);
 
         // Remove original log files
-        await Promise.all(monthFiles.map((f) => fs.unlink(path.join(logDir, f))));
+        await Promise.all(periodFiles.map((f) => fs.unlink(path.join(logDir, f))));
 
         if (archiveLogging)
-          logger.info(`Archived ${monthFiles.length} files to ${archiveloggerName}`);
+          logger.info(`Archived ${periodFiles.length} files to ${archiveFileName}`);
       }
     } catch (err) {
       logger.error({ err }, "Error while archiving logs");
