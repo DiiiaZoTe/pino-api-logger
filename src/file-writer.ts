@@ -21,6 +21,7 @@ export class FileWriter {
   private bytesWritten = 0;
 
   private currentPeriod: string = "";
+  private currentFilePath: string = ""; // Track current file for disk size checks
   private stream: fs.WriteStream | undefined = undefined;
   private flushTimer!: NodeJS.Timeout;
   private isEnabled: boolean = true; // true if the writer is enabled, false if it is disabled due to an error
@@ -103,13 +104,11 @@ export class FileWriter {
   private openStream(filepath: string, errorCounter: number = 0) {
     if (!this.isEnabled) return;
 
+    // Track current file path for disk size checks
+    this.currentFilePath = filepath;
+
     // Check existing file size to account for bytes already on disk
-    try {
-      const stats = fs.statSync(filepath);
-      this.initialFileSizeBytes = stats.size;
-    } catch {
-      this.initialFileSizeBytes = 0; // File doesn't exist yet
-    }
+    this.initialFileSizeBytes = this.getActualFileSizeOnDisk();
 
     // Reset bytes written counter for the new file
     this.bytesWritten = 0;
@@ -347,12 +346,33 @@ export class FileWriter {
       });
   }
 
+  /** Get actual file size on disk (for multi-process safety) */
+  private getActualFileSizeOnDisk(): number {
+    if (!this.currentFilePath) return 0;
+    try {
+      return fs.statSync(this.currentFilePath).size;
+    } catch {
+      return 0;
+    }
+  }
+
   private async flushBuffer() {
     // 1. Handle disabled/broken state immediately
     if (!this.stream || !this.isEnabled) {
       this.buffer = [];
       this.bufferBytes = 0;
       return;
+    }
+
+    // 2. Multi-process safety: check actual disk size before flushing
+    // This catches cases where other workers have written to the same file
+    if (!this.isRotating) {
+      const actualSize = this.getActualFileSizeOnDisk();
+      if (actualSize >= this.maxLogSizeBytes) {
+        // File is already at limit (other workers wrote to it)
+        // Rotate WITHOUT flushing to old file - buffer goes to new file
+        await this.rotateStream(true); // skipFlush = true
+      }
     }
 
     const chunk = this.buffer.join("");
@@ -390,9 +410,9 @@ export class FileWriter {
     });
   }
 
-  private async rotateStream() {
-    // flush current buffer before switching
-    if (this.buffer.length > 0) {
+  private async rotateStream(skipFlush = false) {
+    // Flush current buffer before switching (unless skipFlush - when file is already full from other workers)
+    if (!skipFlush && this.buffer.length > 0) {
       try {
         await this.flushBuffer();
       } catch (err) {
