@@ -628,6 +628,8 @@ Under very high load with many workers, log files may slightly exceed `maxLogSiz
 
 Additionally, multiple workers may occasionally rotate simultaneously, resulting in multiple overflow files being created. While the logger mitigates this where possible, it is an inherent trade-off of coordinating writes to a single file across multiple processes without blocking. Performance is prioritized over strict rotation synchronization.
 
+**Tip:** When running in cluster mode, consider increasing `maxLogSizeMegabytes` (e.g., 200-500MB) to reduce rotation frequency. Fewer rotations means fewer opportunities for race conditions between workers.
+
 For workloads requiring stricter guarantees, consider:
 - Running with fewer workers
 - Using a centralized logging service (e.g., Datadog, Elasticsearch, CloudWatch)
