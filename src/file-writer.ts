@@ -58,7 +58,7 @@ export class FileWriter {
     }
 
     this.currentPeriod = this.getPeriodString();
-    this.openStream(this.getInitialLogPath());
+    this.openStream(this.findAvailableLogPath());
 
     this.flushTimer = setInterval(() => this.flushIfNeeded(), this.flushInterval);
     this.flushTimer.unref?.();
@@ -152,16 +152,6 @@ export class FileWriter {
     return path.join(this.logDir, `${period}.log`);
   }
 
-  /** Check if a file exists */
-  private async fileExists(p: string): Promise<boolean> {
-    try {
-      await fs.promises.access(p);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
   /**
    * Generate candidate overflow filenames for the current period.
    * Overflow files use full timestamp: YYYY-MM-DD~HH-mm-ss
@@ -192,16 +182,7 @@ export class FileWriter {
     }
   }
 
-  /** Get a unique overflow filename (async version) */
-  private async getOverflowLogPath(): Promise<string> {
-    for (const candidate of this.generateOverflowCandidates()) {
-      if (!(await this.fileExists(candidate))) return candidate;
-    }
-    // Technically unreachable, because generator is infinite
-    throw new Error(`${DEFAULT_PACKAGE_NAME}: Unable to generate unique log path`);
-  }
-
-  /** Get a unique overflow filename (sync version for constructor) */
+  /** Get a unique overflow filename */
   private getOverflowLogPathSync(): string {
     for (const candidate of this.generateOverflowCandidates()) {
       if (!fs.existsSync(candidate)) return candidate;
@@ -227,23 +208,29 @@ export class FileWriter {
   }
 
   /**
-   * Determine the correct log file path on startup.
+   * Find the best log file path to write to.
    * Checks main log file first, then looks for existing overflow files with space.
+   * Used on startup and during rotation to coordinate between multiple workers.
+   * @param skipMainLog - If true, skip main log check (used when rotating due to size)
+   * @param excludeCurrentFile - If true, exclude current file from consideration (used when rotating due to size)
    */
-  private getInitialLogPath(): string {
+  private findAvailableLogPath(excludeCurrentFile = false): string {
     const mainLogPath = this.getLogPath(this.currentPeriod);
 
-    // Check main log file size
-    try {
-      const stats = fs.statSync(mainLogPath);
-      if (stats.size < this.maxLogSizeBytes) {
-        return mainLogPath; // Main log has space
+    // Check main log file size (unless we're rotating away from it due to size)
+    const isCurrentFileMainLog = this.currentFilePath === mainLogPath;
+    if (!(excludeCurrentFile && isCurrentFileMainLog)) {
+      try {
+        const stats = fs.statSync(mainLogPath);
+        if (stats.size < this.maxLogSizeBytes) {
+          return mainLogPath; // Main log has space
+        }
+      } catch {
+        return mainLogPath; // Main log doesn't exist, use it
       }
-    } catch {
-      return mainLogPath; // Main log doesn't exist, use it
     }
 
-    // Main log is full, look for the most recent overflow file with space
+    // Main log is full (or excluded), look for overflow files with space
     const overflowPattern = this.getOverflowPattern();
     const overflowFiles = fs
       .readdirSync(this.logDir)
@@ -254,13 +241,17 @@ export class FileWriter {
       // Check the most recent overflow file (last in sorted order)
       const mostRecent = overflowFiles[overflowFiles.length - 1];
       const mostRecentPath = path.join(this.logDir, mostRecent);
-      try {
-        const stats = fs.statSync(mostRecentPath);
-        if (stats.size < this.maxLogSizeBytes) {
-          return mostRecentPath; // Most recent overflow has space
+
+      // Skip if this is the file we're rotating away from
+      if (!(excludeCurrentFile && mostRecentPath === this.currentFilePath)) {
+        try {
+          const stats = fs.statSync(mostRecentPath);
+          if (stats.size < this.maxLogSizeBytes) {
+            return mostRecentPath; // Most recent overflow has space
+          }
+        } catch {
+          // If we can't stat it, fall through to create new overflow
         }
-      } catch {
-        // If we can't stat it, fall through to create new overflow
       }
     }
 
@@ -292,7 +283,8 @@ export class FileWriter {
       this.pendingWrites.push(line);
 
       // Rotate async, then process pending writes
-      this.rotateStream()
+      // Pass wouldExceedSize to skip main log check when rotating due to size
+      this.rotateStream(false, wouldExceedSize)
         .then(() => this.processPendingWrites())
         .catch((err) => console.error(`[${DEFAULT_PACKAGE_NAME}] Rotation failed`, err))
         .finally(() => {
@@ -371,7 +363,7 @@ export class FileWriter {
       if (actualSize >= this.maxLogSizeBytes) {
         // File is already at limit (other workers wrote to it)
         // Rotate WITHOUT flushing to old file - buffer goes to new file
-        await this.rotateStream(true); // skipFlush = true
+        await this.rotateStream(true, true); // skipFlush = true, dueToSize = true
       }
     }
 
@@ -410,7 +402,12 @@ export class FileWriter {
     });
   }
 
-  private async rotateStream(skipFlush = false) {
+  /**
+   * Rotate to a new log file.
+   * @param skipFlush - Skip flushing buffer (when file is already full from other workers)
+   * @param dueToSize - Rotation is due to size limit (exclude current file from consideration)
+   */
+  private async rotateStream(skipFlush = false, dueToSize = false) {
     // Flush current buffer before switching (unless skipFlush - when file is already full from other workers)
     if (!skipFlush && this.buffer.length > 0) {
       try {
@@ -426,11 +423,10 @@ export class FileWriter {
     // Update to current period
     this.currentPeriod = this.getPeriodString();
 
-    // Determine next filename
-    let newPath = this.getLogPath(this.currentPeriod);
-    if (fs.existsSync(newPath)) {
-      newPath = await this.getOverflowLogPath();
-    }
+    // Find available log path (reuses existing overflow with space, or creates new)
+    // When rotating due to size, skip main log check - we know it's full
+    // This coordinates between multiple workers writing to the same directory
+    const newPath = this.findAvailableLogPath(dueToSize);
 
     // Use the helper that attaches the error listener
     this.openStream(newPath);
