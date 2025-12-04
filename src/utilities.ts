@@ -3,6 +3,7 @@ import type {
   ArchiveFrequency,
   FileRotationFrequency,
   ParsedRetention,
+  RetentionFormat,
   RetentionUnit,
 } from "./types";
 
@@ -23,8 +24,10 @@ export async function fileExists(filePath: string): Promise<boolean> {
 /**
  * Parse a retention string (e.g., "7d", "3m", "1y") into its components.
  * @throws Error if the retention string is invalid
+ * @param retention - The retention string to parse
+ * @returns The parsed retention
  */
-export function parseRetention(retention: string): ParsedRetention {
+export function parseRetention(retention: RetentionFormat): ParsedRetention {
   const match = retention.match(/^(\d+)([hdwmy])$/);
   if (!match) {
     throw new Error(
@@ -40,8 +43,10 @@ export function parseRetention(retention: string): ParsedRetention {
 /**
  * Convert retention to hours for comparison purposes.
  * Uses maximum values to be conservative in constraint validation.
+ * @param retention - The retention string to convert to hours
+ * @returns The retention in hours
  */
-export function retentionToHours(retention: string): number {
+export function retentionToHours(retention: RetentionFormat): number {
   const { value, unit } = parseRetention(retention);
   switch (unit) {
     case "h":
@@ -58,8 +63,22 @@ export function retentionToHours(retention: string): number {
 }
 
 /**
+ * Compare two retention values and return the shorter (more restrictive) one.
+ * @param a - The first retention value
+ * @param b - The second retention value
+ * @returns The shorter retention value
+ */
+export function getShorterRetention(a: RetentionFormat, b: RetentionFormat): RetentionFormat {
+  const aHours = retentionToHours(a);
+  const bHours = retentionToHours(b);
+  return aHours < bHours ? a : b;
+}
+
+/**
  * Convert a frequency to hours for comparison purposes.
  * Uses maximum values to be conservative in constraint validation.
+ * @param frequency - The frequency to convert to hours
+ * @returns The frequency in hours
  */
 export function frequencyToHours(frequency: FileRotationFrequency | ArchiveFrequency): number {
   switch (frequency) {
@@ -77,6 +96,8 @@ export function frequencyToHours(frequency: FileRotationFrequency | ArchiveFrequ
 /**
  * Get the Monday of the week for a given date.
  * Used for weekly archive grouping.
+ * @param date - The date to get the Monday of the week for
+ * @returns The Monday of the week
  */
 export function getMondayOfWeek(date: Date): string {
   const d = new Date(date);
@@ -86,9 +107,10 @@ export function getMondayOfWeek(date: Date): string {
   return d.toISOString().slice(0, 10);
 }
 
-
 /**
  * Get the archive filename based on period and frequency.
+ * @param period - The period to get the archive filename for
+ * @returns The archive filename
  */
 export function getArchiveFilename(period: string): string {
   // Archive naming convention:
@@ -103,6 +125,9 @@ export function getArchiveFilename(period: string): string {
  * Extract the period from a log filename based on archive frequency.
  * Supports both daily (YYYY-MM-DD.log) and hourly (YYYY-MM-DD~HH.log) log files,
  * as well as overflow files (YYYY-MM-DD~HH-mm-ss.log).
+ * @param filename - The filename to extract the period from
+ * @param frequency - The frequency to extract the period for
+ * @returns The period from the filename
  */
 export function getFilePeriod(filename: string, frequency: ArchiveFrequency): string | null {
   // Extract the base name without extension
@@ -147,6 +172,9 @@ export function getFilePeriod(filename: string, frequency: ArchiveFrequency): st
 
 /**
  * Get the current period string that should be skipped (incomplete period).
+ * @param now - The current date
+ * @param frequency - The frequency to get the current period for
+ * @returns The current period string
  */
 export function getCurrentPeriod(now: Date, frequency: ArchiveFrequency): string {
   const dateStr = now.toISOString().slice(0, 10);
@@ -163,7 +191,6 @@ export function getCurrentPeriod(now: Date, frequency: ArchiveFrequency): string
       return dateStr.slice(0, 7);
   }
 }
-
 
 /**
  * Parse a log filename to extract its date/time period.

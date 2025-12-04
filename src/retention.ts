@@ -1,7 +1,8 @@
 import path from "node:path";
 import { Worker } from "node:worker_threads";
 import cron from "node-cron";
-import type { LoggerWithArchiverOptions, RequiredLoggerOptions, RetentionUnit } from "./types";
+import { DEFAULT_RETENTION_CRON } from "./config";
+import type { LoggerWithArchiverOptions, ResolvedLoggerOptions, RetentionUnit } from "./types";
 import { parseRetention } from "./utilities";
 
 /**
@@ -9,23 +10,12 @@ import { parseRetention } from "./utilities";
  * These are not user-configurable.
  */
 export function getRetentionCron(unit: RetentionUnit): string {
-  switch (unit) {
-    case "h":
-      return "0 * * * *"; // Top of every hour
-    case "d":
-      return "0 1 * * *"; // 1 AM daily
-    case "w":
-      return "0 1 * * 1"; // 1 AM Monday
-    case "m":
-      return "0 1 1 * *"; // 1 AM, 1st of month
-    case "y":
-      return "0 1 1 1 *"; // 1 AM, Jan 1st
-  }
+  return DEFAULT_RETENTION_CRON[unit];
 }
 
-/** Run the retention worker */
-export function runRetentionWorker(options: RequiredLoggerOptions) {
-  const workerPath = path.resolve(__dirname, "run-retention-worker.js");
+/** Run the retention worker in a separate thread */
+export function runRetentionWorker(options: ResolvedLoggerOptions) {
+  const workerPath = path.resolve(__dirname, "retention-worker.js");
   new Worker(workerPath, { workerData: options });
 }
 
@@ -34,10 +24,10 @@ export function runRetentionWorker(options: RequiredLoggerOptions) {
  * @returns A function to stop the retention scheduler
  */
 export function startRetention(options: LoggerWithArchiverOptions) {
-  const { logRetention } = options;
+  const retentionPeriod = options.retention.period;
 
   // If no retention configured, return a no-op stop function
-  if (!logRetention) {
+  if (!retentionPeriod) {
     return () => { };
   }
 
@@ -54,21 +44,22 @@ export function startRetention(options: LoggerWithArchiverOptions) {
  * @returns A function to stop the retention scheduler
  */
 function scheduleNextRun(options: LoggerWithArchiverOptions) {
-  const { logger, logRetention, ...workerData } = options;
+  const { logger, ...workerData } = options;
+  const retentionPeriod = options.retention.period;
 
-  if (!logRetention) {
+  if (!retentionPeriod) {
     return () => { };
   }
 
-  const { unit } = parseRetention(logRetention);
+  const { unit } = parseRetention(retentionPeriod);
   const retentionCron = getRetentionCron(unit);
 
   logger.info(
-    `Scheduling retention check with retention: ${logRetention} (cron: ${retentionCron})`,
+    `Scheduling retention check with retention: ${retentionPeriod} (cron: ${retentionCron})`,
   );
 
   const task = cron.schedule(retentionCron, () => {
-    runRetentionWorker({ ...workerData, logRetention });
+    runRetentionWorker(workerData);
   });
 
   return () => {

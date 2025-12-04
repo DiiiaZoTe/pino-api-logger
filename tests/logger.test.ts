@@ -1,22 +1,23 @@
-import { afterEach, describe, expect, it } from "bun:test";
+/** biome-ignore-all assist/source/organizeImports: who cares about imports order here */
 import fs from "node:fs/promises";
 import path from "node:path";
-import { createLogger, resetLogRegistry } from "../src/index";
+import { afterEach, describe, expect, it } from "bun:test";
+import { cleanupLogRegistry, createLogger } from "../src/index";
 import {
+  fileExists,
   frequencyToHours,
+  getArchiveFilename,
+  getCurrentPeriod,
+  getCutoffDate,
+  getFilePeriod,
+  getMondayOfWeek,
+  parseArchiveFilename,
+  parseLogFilename,
   parseRetention,
   retentionToHours,
-  getMondayOfWeek,
-  getArchiveFilename,
-  getFilePeriod,
-  getCurrentPeriod,
-  parseLogFilename,
-  parseArchiveFilename,
-  getCutoffDate,
-  fileExists,
 } from "../src/utilities";
 
-const TEST_LOG_BASE_DIR = "./logs-test";
+const TEST_LOG_BASE_DIR = "./logs/test";
 const TEST_ARCHIVE_DIR = "archives";
 
 const todayDate = new Date().toISOString().slice(0, 10);
@@ -37,12 +38,12 @@ try {
 describe("Logger Package", () => {
   // Reset registry after each test to ensure isolation
   afterEach(() => {
-    resetLogRegistry();
+    cleanupLogRegistry();
   });
 
   it("01 - should create a logger instance", () => {
     const logDir = getTestLogDir("01");
-    const logger = createLogger({ logDir, runArchiveOnCreation: false });
+    const logger = createLogger({ logDir, archive: { runOnCreation: false } });
     expect(typeof logger.info).toBe("function");
     expect(typeof logger.error).toBe("function");
   });
@@ -50,7 +51,11 @@ describe("Logger Package", () => {
   it("02 - should write log lines to a daily file + test min flush interval", async () => {
     const logDir = getTestLogDir("02");
     const todayFilePath = getTodayFilePath("02");
-    const logger = createLogger({ logDir, flushInterval: 10, runArchiveOnCreation: false });
+    const logger = createLogger({
+      logDir,
+      file: { flushInterval: 10 },
+      archive: { runOnCreation: false },
+    });
     logger.info("Test log line");
 
     // wait a short moment for the buffer to flush
@@ -69,7 +74,11 @@ describe("Logger Package", () => {
   it("03 - should flush immediately when buffer is full", async () => {
     const logDir = getTestLogDir("03");
     const todayFilePath = getTodayFilePath("03");
-    const logger = createLogger({ logDir, maxBufferLines: 1, runArchiveOnCreation: false });
+    const logger = createLogger({
+      logDir,
+      file: { maxBufferLines: 1 },
+      archive: { runOnCreation: false },
+    });
     logger.info("Line 1");
     logger.info("Line 2");
 
@@ -85,9 +94,11 @@ describe("Logger Package", () => {
     const todayFilePath = getTodayFilePath("04");
     const logger = createLogger({
       logDir,
-      maxBufferKilobytes: 1,
-      flushInterval: 300,
-      runArchiveOnCreation: false,
+      file: {
+        maxBufferKilobytes: 1,
+        flushInterval: 300,
+      },
+      archive: { runOnCreation: false },
     });
     logger.info("a".repeat(750));
     logger.info("b".repeat(750));
@@ -107,7 +118,11 @@ describe("Logger Package", () => {
   it("05 - should work with child loggers", async () => {
     const logDir = getTestLogDir("05");
     const todayFilePath = getTodayFilePath("05");
-    const logger = createLogger({ logDir, maxBufferLines: 1, runArchiveOnCreation: false });
+    const logger = createLogger({
+      logDir,
+      file: { maxBufferLines: 1 },
+      archive: { runOnCreation: false },
+    });
     const child = logger.child({ request: "child-test" });
     child.info("child log line");
     child.error({ test: "child-error-test" });
@@ -124,7 +139,10 @@ describe("Logger Package", () => {
     const logDir = getTestLogDir("06");
     const previousMonthDate = await createCopyOfTodayFileMinusXDays(logDir, 31);
     // create the logger instance, it should archive the previous month file
-    const _logger = createLogger({ logDir, archiveDir: TEST_ARCHIVE_DIR, archiveLogging: true });
+    const _logger = createLogger({
+      logDir,
+      archive: { dir: TEST_ARCHIVE_DIR, logging: true },
+    });
     // wait for the archive to happen (1 second lets say)
     await new Promise((resolve) => setTimeout(resolve, 1000));
     const filesAfterArchive = await fs.readdir(logDir);
@@ -147,24 +165,26 @@ describe("Logger Package", () => {
   it("07 - should use internal cron schedule based on archiveFrequency", async () => {
     const logDir = getTestLogDir("07");
     // First create a log file for today so we have something to copy
-    const logger1 = createLogger({ logDir, runArchiveOnCreation: false });
+    const logger1 = createLogger({ logDir, archive: { runOnCreation: false } });
     logger1.info("Initial log line");
     await new Promise((resolve) => setTimeout(resolve, 300));
-    await resetLogRegistry();
+    await cleanupLogRegistry();
 
     const previousMonthDate = await createCopyOfTodayFileMinusXDays(logDir, 62);
     // archiveFrequency: "monthly" uses internal cron "0 1 1 * *"
     const logger = createLogger({
       logDir,
-      runArchiveOnCreation: false,
-      archiveFrequency: "monthly",
-      archiveDir: TEST_ARCHIVE_DIR,
-      archiveLogging: true,
+      archive: {
+        runOnCreation: false,
+        frequency: "monthly",
+        dir: TEST_ARCHIVE_DIR,
+        logging: true,
+      },
     });
 
     // Verify the logger was created with monthly frequency
     const params = logger.getParams();
-    expect(params.archiveFrequency).toBe("monthly");
+    expect(params.archive.frequency).toBe("monthly");
 
     // Ensure archive dir exists for checking
     try {
@@ -184,8 +204,8 @@ describe("Logger Package", () => {
     const todayFilePath = getTodayFilePath("08");
     const logger = createLogger({
       logDir,
-      maxBufferLines: 1,
-      runArchiveOnCreation: false,
+      file: { maxBufferLines: 1 },
+      archive: { runOnCreation: false },
       pinoOptions: {
         // Custom base adds service info to every log
         base: { service: "test-api", version: "1.0.0" },
@@ -228,8 +248,8 @@ describe("Logger Package", () => {
     // Only override level formatter, log formatter should use default (msg last)
     const logger = createLogger({
       logDir,
-      maxBufferLines: 1,
-      runArchiveOnCreation: false,
+      file: { maxBufferLines: 1 },
+      archive: { runOnCreation: false },
       pinoOptions: {
         formatters: {
           level: (label) => ({ lvl: label }),
@@ -265,9 +285,11 @@ describe("Logger Package", () => {
     // Create logger with archiving disabled
     const _logger = createLogger({
       logDir,
-      archiveDir: TEST_ARCHIVE_DIR,
-      disableArchiving: true,
-      runArchiveOnCreation: true, // Would normally trigger archive, but disabled
+      archive: {
+        dir: TEST_ARCHIVE_DIR,
+        disabled: true,
+        runOnCreation: true, // Would normally trigger archive, but disabled
+      },
     });
 
     // Wait for archive to potentially happen
@@ -295,9 +317,11 @@ describe("Logger Package", () => {
     // Create logger with 1MB max size - should immediately use overflow
     const logger = createLogger({
       logDir,
-      maxLogSizeMegabytes: 1,
-      maxBufferLines: 1,
-      runArchiveOnCreation: false,
+      file: {
+        maxLogSizeMegabytes: 1,
+        maxBufferLines: 1,
+      },
+      archive: { runOnCreation: false },
     });
 
     logger.info("This should go to overflow file");
@@ -340,9 +364,11 @@ describe("Logger Package", () => {
     // Create logger - should pick up the existing overflow file
     const logger = createLogger({
       logDir,
-      maxLogSizeMegabytes: 1,
-      maxBufferLines: 1,
-      runArchiveOnCreation: false,
+      file: {
+        maxLogSizeMegabytes: 1,
+        maxBufferLines: 1,
+      },
+      archive: { runOnCreation: false },
     });
 
     logger.info("This should append to existing overflow");
@@ -365,16 +391,16 @@ describe("Logger Package", () => {
     expect(overflowContent).toContain("This should append to existing overflow"); // New content appended
   });
 
-  it("13 - should not write to file when toFile is false", async () => {
+  it("13 - should not write to file when file.enabled is false", async () => {
     const logDir = getTestLogDir("13");
     await fs.mkdir(logDir, { recursive: true });
 
-    // Create logger with toFile: false (console only)
+    // Create logger with file.enabled: false (console only)
     const logger = createLogger({
       logDir,
-      toFile: false,
-      // toConsole: true, // Can be ommited true is default
-      runArchiveOnCreation: false,
+      file: { enabled: false },
+      // console: { enabled: true }, // Can be omitted, true is default
+      archive: { runOnCreation: false },
     });
 
     logger.info("This should not go to file");
@@ -387,17 +413,16 @@ describe("Logger Package", () => {
     expect(logFile).toBeUndefined();
   });
 
-  it("14 - should write to file when toFile is true and toConsole is false", async () => {
+  it("14 - should write to file when file.enabled is true and console.enabled is false", async () => {
     const logDir = getTestLogDir("14");
     const todayFilePath = getTodayFilePath("14");
 
-    // Create logger with toConsole: false (file only)
+    // Create logger with console.enabled: false (file only)
     const logger = createLogger({
       logDir,
-      toFile: true,
-      toConsole: false,
-      maxBufferLines: 1,
-      runArchiveOnCreation: false,
+      file: { enabled: true, maxBufferLines: 1 },
+      console: { enabled: false },
+      archive: { runOnCreation: false },
     });
 
     logger.info("This should go to file only");
@@ -409,17 +434,19 @@ describe("Logger Package", () => {
     expect(content).toContain("This should go to file only");
   });
 
-  it("15 - should disable archiving when toFile is false", async () => {
+  it("15 - should disable archiving when file.enabled is false", async () => {
     const logDir = getTestLogDir("15");
     await createCopyOfTodayFileMinusXDays(logDir, 31);
 
-    // Create logger with toFile: false - archiving should be automatically disabled
+    // Create logger with file.enabled: false - archiving should be automatically disabled
     const logger = createLogger({
       logDir,
-      toFile: false,
-      toConsole: true,
-      archiveDir: TEST_ARCHIVE_DIR,
-      runArchiveOnCreation: true, // Would normally trigger archive
+      file: { enabled: false },
+      console: { enabled: true },
+      archive: {
+        dir: TEST_ARCHIVE_DIR,
+        runOnCreation: true, // Would normally trigger archive
+      },
     });
 
     // Wait for archive to potentially happen
@@ -430,22 +457,20 @@ describe("Logger Package", () => {
     const archiveFolder = files.find((f) => f.startsWith(TEST_ARCHIVE_DIR));
     expect(archiveFolder).toBeUndefined();
 
-    // Verify getParams shows disableArchiving is true
+    // Verify getParams shows archive.disabled is true
     const params = logger.getParams();
-    expect(params.disableArchiving).toBe(true);
+    expect(params.archive.disabled).toBe(true);
   });
 
   // New tests for v2 features
-
-  it("16 - should write to hourly file when fileRotationFrequency is hourly", async () => {
+  it("16 - should write to hourly file when file.rotationFrequency is hourly", async () => {
     const logDir = getTestLogDir("16");
     const hourlyFilePath = getHourlyFilePath("16");
 
     const logger = createLogger({
       logDir,
-      fileRotationFrequency: "hourly",
-      maxBufferLines: 1,
-      runArchiveOnCreation: false,
+      file: { rotationFrequency: "hourly", maxBufferLines: 1 },
+      archive: { runOnCreation: false },
     });
 
     logger.info("Hourly rotation test");
@@ -466,52 +491,48 @@ describe("Logger Package", () => {
 
     const logger = createLogger({
       logDir,
-      fileRotationFrequency: "hourly",
-      archiveFrequency: "daily",
-      runArchiveOnCreation: false,
+      file: { rotationFrequency: "hourly" },
+      archive: { frequency: "daily", runOnCreation: false },
     });
 
     const params = logger.getParams();
-    expect(params.fileRotationFrequency).toBe("hourly");
-    expect(params.archiveFrequency).toBe("daily");
+    expect(params.file.rotationFrequency).toBe("hourly");
+    expect(params.archive.frequency).toBe("daily");
   });
 
-  it("18 - should throw error when archiveFrequency < fileRotationFrequency", () => {
+  it("18 - should throw error when archive.frequency < file.rotationFrequency", () => {
     const logDir = getTestLogDir("18");
 
     expect(() => {
       createLogger({
         logDir,
-        fileRotationFrequency: "daily",
-        archiveFrequency: "hourly", // Invalid: can't archive hourly when rotating daily
-        runArchiveOnCreation: false,
+        file: { rotationFrequency: "daily" },
+        archive: { frequency: "hourly", runOnCreation: false }, // Invalid: can't archive hourly when rotating daily
       });
     }).toThrow(/archiveFrequency.*must be >= fileRotationFrequency/);
   });
 
-  it("19 - should throw error when logRetention < archiveFrequency", () => {
+  it("19 - should throw error when retention.period < archive.frequency", () => {
     const logDir = getTestLogDir("19");
 
     expect(() => {
       createLogger({
         logDir,
-        archiveFrequency: "monthly",
-        logRetention: "1w", // Invalid: 1 week < 1 month
-        runArchiveOnCreation: false,
+        archive: { frequency: "monthly", runOnCreation: false },
+        retention: { period: "1w" }, // Invalid: 1 week < 1 month
       });
     }).toThrow(/logRetention.*must be >= archiveFrequency/);
   });
 
-  it("20 - should throw error when logRetention < fileRotationFrequency", () => {
+  it("20 - should throw error when retention.period < file.rotationFrequency", () => {
     const logDir = getTestLogDir("20");
 
     expect(() => {
       createLogger({
         logDir,
-        fileRotationFrequency: "daily",
-        logRetention: "12h", // Invalid: 12 hours < 1 day
-        disableArchiving: true,
-        runArchiveOnCreation: false,
+        file: { rotationFrequency: "daily" },
+        archive: { disabled: true, runOnCreation: false },
+        retention: { period: "12h" }, // Invalid: 12 hours < 1 day
       });
     }).toThrow(/logRetention.*must be >= fileRotationFrequency/);
   });
@@ -522,10 +543,9 @@ describe("Logger Package", () => {
     expect(() => {
       createLogger({
         logDir,
-        fileRotationFrequency: "daily",
-        logRetention: "24h", // Invalid: hourly unit can't be used with daily files
-        disableArchiving: true,
-        runArchiveOnCreation: false,
+        file: { rotationFrequency: "daily" },
+        archive: { disabled: true, runOnCreation: false },
+        retention: { period: "24h" }, // Invalid: hourly unit can't be used with daily files
       });
     }).toThrow(/logRetention with hours.*cannot be used with daily file rotation/);
   });
@@ -536,16 +556,15 @@ describe("Logger Package", () => {
     // This should not throw
     const logger = createLogger({
       logDir,
-      fileRotationFrequency: "hourly",
-      archiveFrequency: "daily",
-      logRetention: "7d",
-      runArchiveOnCreation: false,
+      file: { rotationFrequency: "hourly" },
+      archive: { frequency: "daily", runOnCreation: false },
+      retention: { period: "7d" },
     });
 
     const params = logger.getParams();
-    expect(params.fileRotationFrequency).toBe("hourly");
-    expect(params.archiveFrequency).toBe("daily");
-    expect(params.logRetention).toBe("7d");
+    expect(params.file.rotationFrequency).toBe("hourly");
+    expect(params.archive.frequency).toBe("daily");
+    expect(params.retention.period).toBe("7d");
   });
 
   it("23 - should accept retention when archiving is disabled", () => {
@@ -554,15 +573,14 @@ describe("Logger Package", () => {
     // This should not throw - retention works without archiving
     const logger = createLogger({
       logDir,
-      fileRotationFrequency: "hourly",
-      disableArchiving: true,
-      logRetention: "3h",
-      runArchiveOnCreation: false,
+      file: { rotationFrequency: "hourly" },
+      archive: { disabled: true, runOnCreation: false },
+      retention: { period: "3h" },
     });
 
     const params = logger.getParams();
-    expect(params.disableArchiving).toBe(true);
-    expect(params.logRetention).toBe("3h");
+    expect(params.archive.disabled).toBe(true);
+    expect(params.retention.period).toBe("3h");
   });
 
   it("24 - should have stopRetention and startRetention methods", () => {
@@ -570,26 +588,161 @@ describe("Logger Package", () => {
 
     const logger = createLogger({
       logDir,
-      archiveFrequency: "daily", // Use daily to satisfy constraint with 7d retention
-      logRetention: "7d",
-      runArchiveOnCreation: false,
+      archive: { frequency: "daily", runOnCreation: false }, // Use daily to satisfy constraint with 7d retention
+      retention: { period: "7d" },
     });
 
     expect(typeof logger.stopRetention).toBe("function");
     expect(typeof logger.startRetention).toBe("function");
   });
 
-  it("25 - should throw error for invalid logRetention format", () => {
+  it("25 - should throw error for invalid retention.period format", () => {
     const logDir = getTestLogDir("25");
 
     expect(() => {
       createLogger({
         logDir,
         //@ts-expect-error - Invalid format
-        logRetention: "invalid", // Invalid format
-        runArchiveOnCreation: false,
+        retention: { period: "invalid" }, // Invalid format
+        archive: { runOnCreation: false },
       });
     }).toThrow(/Invalid logRetention format/);
+  });
+
+  it("26 - should archive files from previous day with daily frequency", async () => {
+    const logDir = getTestLogDir("26");
+    const archiveDir = "archives";
+    await fs.mkdir(logDir, { recursive: true });
+
+    // Create a log file for yesterday
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayStr = yesterday.toISOString().slice(0, 10);
+    const yesterdayFile = `${yesterdayStr}.log`;
+    await fs.writeFile(
+      path.join(logDir, yesterdayFile),
+      `{"level":"info","time":"${yesterday.toISOString()}","msg":"yesterday log"}\n`,
+    );
+
+    // Create a log file for today (should NOT be archived)
+    await fs.writeFile(
+      path.join(logDir, todayFile),
+      `{"level":"info","time":"${new Date().toISOString()}","msg":"today log"}\n`,
+    );
+
+    // Create logger with daily archive frequency and run archiver
+    const logger = createLogger({
+      logDir,
+      archive: { frequency: "daily", dir: archiveDir, logging: false, runOnCreation: false },
+      console: { enabled: false },
+    });
+    await logger.runArchiver();
+
+    // Check results
+    const files = await fs.readdir(logDir);
+
+    // Today's file should still exist (not archived)
+    expect(files).toContain(todayFile);
+
+    // Yesterday's file should be gone (archived)
+    expect(files).not.toContain(yesterdayFile);
+
+    // Archive folder should exist with yesterday's archive
+    const archiveFiles = await fs.readdir(path.join(logDir, archiveDir));
+    const expectedArchive = archiveFiles.find((f) => f.startsWith(yesterdayStr));
+    expect(expectedArchive).toBeDefined();
+    expect(expectedArchive).toMatch(/\.tar\.gz$/);
+  });
+
+  it("27 - should delete log files older than retention period", async () => {
+    const logDir = getTestLogDir("27");
+    await fs.mkdir(logDir, { recursive: true });
+
+    // Create a log file from 10 days ago (should be deleted with 7d retention)
+    const oldDate = new Date();
+    oldDate.setDate(oldDate.getDate() - 10);
+    const oldDateStr = oldDate.toISOString().slice(0, 10);
+    const oldFile = `${oldDateStr}.log`;
+    await fs.writeFile(
+      path.join(logDir, oldFile),
+      `{"level":"info","time":"${oldDate.toISOString()}","msg":"old log"}\n`,
+    );
+
+    // Create a log file from 3 days ago (should NOT be deleted with 7d retention)
+    const recentDate = new Date();
+    recentDate.setDate(recentDate.getDate() - 3);
+    const recentDateStr = recentDate.toISOString().slice(0, 10);
+    const recentFile = `${recentDateStr}.log`;
+    await fs.writeFile(
+      path.join(logDir, recentFile),
+      `{"level":"info","time":"${recentDate.toISOString()}","msg":"recent log"}\n`,
+    );
+
+    // Create today's file (should NOT be deleted)
+    await fs.writeFile(
+      path.join(logDir, todayFile),
+      `{"level":"info","time":"${new Date().toISOString()}","msg":"today log"}\n`,
+    );
+
+    // Create logger with 7d retention and run retention (archiving disabled to allow 7d retention)
+    const logger = createLogger({
+      logDir,
+      retention: { period: "7d" },
+      archive: { disabled: true },
+      console: { enabled: false },
+    });
+    await logger.runRetention();
+
+    // Check results
+    const files = await fs.readdir(logDir);
+
+    // Old file (10 days) should be deleted
+    expect(files).not.toContain(oldFile);
+
+    // Recent file (3 days) should still exist
+    expect(files).toContain(recentFile);
+
+    // Today's file should still exist
+    expect(files).toContain(todayFile);
+  });
+
+  it("28 - should delete archive files older than retention period", async () => {
+    const logDir = getTestLogDir("28");
+    const archiveDir = "archives";
+    const archivePath = path.join(logDir, archiveDir);
+    await fs.mkdir(archivePath, { recursive: true });
+
+    // Create a daily archive from 10 days ago (should be deleted with 7d retention)
+    const oldDate = new Date();
+    oldDate.setDate(oldDate.getDate() - 10);
+    const oldDateStr = oldDate.toISOString().slice(0, 10); // YYYY-MM-DD
+    const oldArchive = `${oldDateStr}-archive.tar.gz`;
+    await fs.writeFile(path.join(archivePath, oldArchive), "fake archive content");
+
+    // Create a daily archive from 3 days ago (should NOT be deleted with 7d retention)
+    const recentDate = new Date();
+    recentDate.setDate(recentDate.getDate() - 3);
+    const recentDateStr = recentDate.toISOString().slice(0, 10);
+    const recentArchive = `${recentDateStr}-archive.tar.gz`;
+    await fs.writeFile(path.join(archivePath, recentArchive), "fake recent archive content");
+
+    // Create logger with 7d retention and run retention (archiving disabled to allow 7d retention)
+    const logger = createLogger({
+      logDir,
+      retention: { period: "7d" },
+      archive: { disabled: true },
+      console: { enabled: false },
+    });
+    await logger.runRetention();
+
+    // Check results
+    const archiveFiles = await fs.readdir(archivePath);
+
+    // Old archive (10 days) should be deleted
+    expect(archiveFiles).not.toContain(oldArchive);
+
+    // Recent archive (3 days) should still exist
+    expect(archiveFiles).toContain(recentArchive);
   });
 });
 
@@ -603,9 +756,13 @@ describe("Retention Utility Functions", () => {
   });
 
   it("should throw error for invalid retention format", () => {
+    //@ts-expect-error - Invalid format
     expect(() => parseRetention("invalid")).toThrow(/Invalid retention format/);
+    //@ts-expect-error - Invalid format
     expect(() => parseRetention("7")).toThrow(/Invalid retention format/);
+    //@ts-expect-error - Invalid format
     expect(() => parseRetention("d7")).toThrow(/Invalid retention format/);
+    //@ts-expect-error - Invalid format
     expect(() => parseRetention("")).toThrow(/Invalid retention format/);
   });
 

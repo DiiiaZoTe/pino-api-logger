@@ -1,9 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DEFAULT_PACKAGE_NAME } from "./config";
-import type { FileRotationFrequency, FileWriterOptions } from "./types";
+import type { FileRotationFrequency, ResolvedFileConfig } from "./types";
 
 type WriterState = "Idle" | "Flushing" | "Rotating" | "FlushingAndRotating";
+
+/** Options passed to FileWriter (includes logDir which is at root level) */
+export type FileWriterOptions = { logDir: string } & ResolvedFileConfig;
 
 export class FlushRotateState {
   private _state: WriterState = "Idle";
@@ -81,7 +84,7 @@ export class FlushRotateState {
 
 export class FileWriter {
   private logDir: string;
-  private fileRotationFrequency: FileRotationFrequency;
+  private rotationFrequency: FileRotationFrequency;
   private flushInterval: number;
   private maxBufferLines: number;
   private maxBufferKilobytes: number;
@@ -96,6 +99,7 @@ export class FileWriter {
   private stream: fs.WriteStream | undefined = undefined;
   private flushTimer!: NodeJS.Timeout;
   private isEnabled: boolean = true; // true if the writer is enabled, false if it is disabled due to an error
+  private isClosed: boolean = false; // true if the writer has been closed
   private initialFileSizeBytes = 0;
 
   private state = new FlushRotateState();
@@ -105,9 +109,9 @@ export class FileWriter {
     return this.initialFileSizeBytes + (this.stream?.bytesWritten ?? 0);
   }
 
-  constructor(opts: Required<FileWriterOptions>) {
+  constructor(opts: FileWriterOptions) {
     this.logDir = opts.logDir;
-    this.fileRotationFrequency = opts.fileRotationFrequency;
+    this.rotationFrequency = opts.rotationFrequency;
     this.flushInterval = opts.flushInterval;
     this.maxBufferLines = opts.maxBufferLines;
     this.maxBufferKilobytes = opts.maxBufferKilobytes;
@@ -136,10 +140,10 @@ export class FileWriter {
    * Update options with new configuration if stricter settings are provided.
    * Used when multiple loggers share the same writer.
    */
-  updateOptions(opts: Required<FileWriterOptions>) {
+  updateOptions(opts: FileWriterOptions) {
     // Update rotation frequency: hourly wins over daily (strictest)
-    if (opts.fileRotationFrequency === "hourly" && this.fileRotationFrequency === "daily") {
-      this.fileRotationFrequency = "hourly";
+    if (opts.rotationFrequency === "hourly" && this.rotationFrequency === "daily") {
+      this.rotationFrequency = "hourly";
       // When switching to hourly, update current period format
       this.currentPeriod = this.getPeriodString();
     }
@@ -207,7 +211,7 @@ export class FileWriter {
     const now = new Date();
     const date = now.toISOString().slice(0, 10); // YYYY-MM-DD
 
-    if (this.fileRotationFrequency === "hourly") {
+    if (this.rotationFrequency === "hourly") {
       const hour = String(now.getHours()).padStart(2, "0");
       return `${date}~${hour}`;
     }
@@ -282,7 +286,7 @@ export class FileWriter {
    * Overflow files always have format: YYYY-MM-DD~HH-mm-ss*.log
    */
   private getOverflowPattern(): RegExp {
-    if (this.fileRotationFrequency === "hourly") {
+    if (this.rotationFrequency === "hourly") {
       // For hourly, match overflow files for the current hour
       // currentPeriod is YYYY-MM-DD~HH, overflow is YYYY-MM-DD~HH-mm-ss
       const [date, hour] = this.currentPeriod.split("~");
@@ -446,6 +450,10 @@ export class FileWriter {
 
   /** Clean shutdown */
   public async close() {
+    // Prevent double-close (can happen when workers close their logger and cleanupLogRegistry runs)
+    if (this.isClosed) return;
+    this.isClosed = true;
+
     clearInterval(this.flushTimer);
     try {
       await this.flushBuffer();
@@ -455,10 +463,14 @@ export class FileWriter {
     this.stream?.end();
   }
 
-  public getInstanceOptions() {
+  /** Get current instance options (for getParams) */
+  public getInstanceOptions(): ResolvedFileConfig & {
+    maxBufferBytes: number;
+    maxLogSizeBytes: number;
+  } {
     return {
-      logDir: this.logDir,
-      fileRotationFrequency: this.fileRotationFrequency,
+      enabled: true, // If we're here, file writing is enabled
+      rotationFrequency: this.rotationFrequency,
       flushInterval: this.flushInterval,
       maxBufferLines: this.maxBufferLines,
       maxBufferKilobytes: this.maxBufferKilobytes,

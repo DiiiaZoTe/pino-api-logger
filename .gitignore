@@ -11,7 +11,6 @@ coverage
 *.lcov
 
 # logs
-logs-test
 logs
 _.log
 report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
@@ -33,9 +32,6 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # Finder (MacOS) folder config
 .DS_Store
-
-# Benchmark results
-tests/benchmark-results.txt
 
 # Personal notes
 notes.md

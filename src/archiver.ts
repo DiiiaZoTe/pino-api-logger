@@ -1,28 +1,20 @@
 import path from "node:path";
 import { Worker } from "node:worker_threads";
 import cron from "node-cron";
-import type { ArchiveFrequency, LoggerWithArchiverOptions, RequiredLoggerOptions } from "./types";
+import { DEFAULT_ARCHIVE_CRON } from "./config";
+import type { ArchiveFrequency, LoggerWithArchiverOptions, ResolvedLoggerOptions } from "./types";
 
 /**
  * Get the internal cron schedule based on archive frequency.
  * These are not user-configurable.
  */
 export function getArchiveCron(frequency: ArchiveFrequency): string {
-  switch (frequency) {
-    case "hourly":
-      return "5 * * * *"; // 5 mins past every hour
-    case "daily":
-      return "0 1 * * *"; // 1 AM daily
-    case "weekly":
-      return "0 1 * * 1"; // 1 AM Monday
-    case "monthly":
-      return "0 1 1 * *"; // 1 AM, 1st of month
-  }
+  return DEFAULT_ARCHIVE_CRON[frequency];
 }
 
-/** Run the archiver worker */
-export function runArchiverWorker(options: RequiredLoggerOptions) {
-  const workerPath = path.resolve(__dirname, "run-archiver-worker.js");
+/** Run the archiver worker in a separate thread */
+export function runArchiverWorker(options: ResolvedLoggerOptions) {
+  const workerPath = path.resolve(__dirname, "archiver-worker.js");
   new Worker(workerPath, { workerData: options });
 }
 
@@ -31,7 +23,7 @@ export function runArchiverWorker(options: RequiredLoggerOptions) {
  * @returns A function to stop the archiver
  */
 export function startArchiver(options: LoggerWithArchiverOptions) {
-  if (options.runArchiveOnCreation) {
+  if (options.archive.runOnCreation) {
     const { logger: _logger, ...workerData } = options;
     runArchiverWorker(workerData);
   }
@@ -45,11 +37,11 @@ export function startArchiver(options: LoggerWithArchiverOptions) {
  */
 function scheduleNextRun(options: LoggerWithArchiverOptions) {
   const { logger, ...workerData } = options;
-  const archiveCron = getArchiveCron(options.archiveFrequency);
+  const archiveCron = getArchiveCron(options.archive.frequency);
 
-  if (options.archiveLogging)
+  if (options.archive.logging)
     logger.info(
-      `Scheduling archive run with frequency: ${options.archiveFrequency} (cron: ${archiveCron})`,
+      `Scheduling archive run with frequency: ${options.archive.frequency} (cron: ${archiveCron})`,
     );
 
   const task = cron.schedule(archiveCron, () => {
@@ -57,7 +49,7 @@ function scheduleNextRun(options: LoggerWithArchiverOptions) {
   });
 
   return () => {
-    if (options.archiveLogging) options.logger.info(`Cleared archive run interval`);
+    if (options.archive.logging) options.logger.info(`Cleared archive run interval`);
     task.stop();
   };
 }

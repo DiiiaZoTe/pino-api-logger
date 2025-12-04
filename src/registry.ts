@@ -1,15 +1,14 @@
 import { startArchiver } from "./archiver";
 import { DEFAULT_PACKAGE_NAME } from "./config";
-import { FileWriter } from "./file-writer";
+import { FileWriter, type FileWriterOptions } from "./file-writer";
 import { startRetention } from "./retention";
 import type {
   ArchiveFrequency,
-  ArchiverOptions,
-  FileWriterOptions,
   LoggerWithArchiverOptions,
-  RetentionOptions,
+  ResolvedArchiveConfig,
+  ResolvedRetentionConfig,
 } from "./types";
-import { retentionToHours } from "./utilities";
+import { getShorterRetention } from "./utilities";
 
 /**
  * Registry to ensure we only have one FileWriter per log directory.
@@ -22,14 +21,14 @@ const writerRegistry = new Map<string, FileWriter>();
  * Key: absolute path of logDir
  * Value: function to stop the archiver
  */
-const archiverRegistry = new Map<string, { stop: () => void; options: ArchiverOptions }>();
+const archiverRegistry = new Map<string, { stop: () => void; options: ResolvedArchiveConfig }>();
 
 /**
  * Registry to ensure we only have one Retention scheduler per log directory.
  * Key: absolute path of logDir
  * Value: function to stop the retention scheduler
  */
-const retentionRegistry = new Map<string, { stop: () => void; options: RetentionOptions }>();
+const retentionRegistry = new Map<string, { stop: () => void; options: ResolvedRetentionConfig }>();
 
 /**
  * Archive frequency priority (lower = stricter/more frequent)
@@ -49,19 +48,10 @@ function getStricterArchiveFrequency(a: ArchiveFrequency, b: ArchiveFrequency): 
 }
 
 /**
- * Compare two retention values and return the shorter (more restrictive) one.
- */
-function getShorterRetention(a: string, b: string): string {
-  const aHours = retentionToHours(a);
-  const bHours = retentionToHours(b);
-  return aHours < bHours ? a : b;
-}
-
-/**
  * Get an existing FileWriter for the given log directory, or create a new one.
  * If a writer already exists, the options will be merged (taking the strictest/minimum values).
  */
-export function getOrCreateFileWriter(opts: Required<FileWriterOptions>): FileWriter {
+export function getOrCreateFileWriter(opts: FileWriterOptions): FileWriter {
   const key = opts.logDir;
   const existing = writerRegistry.get(key);
 
@@ -79,11 +69,13 @@ export function getOrCreateFileWriter(opts: Required<FileWriterOptions>): FileWr
 export type ArchiverController = {
   start: () => void;
   stop: () => void;
+  getConfig: () => ResolvedArchiveConfig;
 };
 
 export type RetentionController = {
   start: () => void;
   stop: () => void;
+  getConfig: () => ResolvedRetentionConfig;
 };
 
 /**
@@ -104,17 +96,17 @@ export function createArchiverController(
 
     const existing = archiverRegistry.get(key);
     if (existing) {
-      // Check for archiveDir conflict (must match)
-      if (existing.options.archiveDir !== opts.archiveDir) {
+      // Check for archive.dir conflict (must match)
+      if (existing.options.dir !== opts.archive.dir) {
         throw new Error(
-          `[${DEFAULT_PACKAGE_NAME}] Cannot create multiple archivers for logDir "${key}" with conflicting archiveDir. ` +
-          `Existing: ${existing.options.archiveDir}, Requested: ${opts.archiveDir}`,
+          `[${DEFAULT_PACKAGE_NAME}] Cannot create multiple archivers for logDir "${key}" with conflicting archive.dir. ` +
+          `Existing: ${existing.options.dir}, Requested: ${opts.archive.dir}`,
         );
       }
 
-      // For archiveFrequency, stricter wins - we need to restart if new is stricter
-      const newFrequency = opts.archiveFrequency;
-      const existingFrequency = existing.options.archiveFrequency;
+      // For archive.frequency, stricter wins - we need to restart if new is stricter
+      const newFrequency = opts.archive.frequency;
+      const existingFrequency = existing.options.frequency;
 
       if (
         existingFrequency &&
@@ -125,7 +117,7 @@ export function createArchiverController(
         // New frequency is stricter, need to restart archiver
         existing.stop();
         const stopFn = startArchiver(opts);
-        archiverRegistry.set(key, { stop: stopFn, options: opts });
+        archiverRegistry.set(key, { stop: stopFn, options: opts.archive });
       }
 
       isRunning = true;
@@ -133,7 +125,7 @@ export function createArchiverController(
     }
 
     const stopFn = startArchiver(opts);
-    archiverRegistry.set(key, { stop: stopFn, options: opts });
+    archiverRegistry.set(key, { stop: stopFn, options: opts.archive });
     isRunning = true;
   };
 
@@ -148,9 +140,15 @@ export function createArchiverController(
     isRunning = false;
   };
 
+  const getConfig = () => {
+    // Get the current archive config from registry (may have been merged with stricter settings)
+    const registryEntry = archiverRegistry.get(key);
+    return registryEntry?.options ?? opts.archive;
+  };
+
   if (autoStart) start();
 
-  return { start, stop };
+  return { start, stop, getConfig };
 }
 
 /**
@@ -170,15 +168,15 @@ export function createRetentionController(
     if (isRunning) return;
 
     // If no retention configured, nothing to do
-    if (!opts.logRetention) {
+    if (!opts.retention.period) {
       return;
     }
 
     const existing = retentionRegistry.get(key);
     if (existing) {
       // For retention, shorter wins - we need to restart if new is shorter
-      const newRetention = opts.logRetention;
-      const existingRetention = existing.options.logRetention;
+      const newRetention = opts.retention.period;
+      const existingRetention = existing.options.period;
 
       if (
         existingRetention &&
@@ -189,7 +187,7 @@ export function createRetentionController(
         // New retention is shorter, need to restart retention scheduler
         existing.stop();
         const stopFn = startRetention(opts);
-        retentionRegistry.set(key, { stop: stopFn, options: opts });
+        retentionRegistry.set(key, { stop: stopFn, options: opts.retention });
       }
 
       isRunning = true;
@@ -197,7 +195,7 @@ export function createRetentionController(
     }
 
     const stopFn = startRetention(opts);
-    retentionRegistry.set(key, { stop: stopFn, options: opts });
+    retentionRegistry.set(key, { stop: stopFn, options: opts.retention });
     isRunning = true;
   };
 
@@ -212,16 +210,23 @@ export function createRetentionController(
     isRunning = false;
   };
 
+  const getConfig = () => {
+    // Get the current retention config from registry (may have been merged with shorter settings)
+    const registryEntry = retentionRegistry.get(key);
+    return registryEntry?.options ?? opts.retention;
+  };
+
   if (autoStart) start();
 
-  return { start, stop };
+  return { start, stop, getConfig };
 }
 
 /**
- * Reset the log registry by closing all writers and stopping all archivers and retention schedulers.
+ * Cleanup all log registry resources by closing writers and stopping all schedulers.
  * Useful for testing to ensure a clean state between tests.
+ * Note: This does NOT re-initialize - you'll need to create new loggers after calling this.
  */
-export function resetLogRegistry() {
+export function cleanupLogRegistry() {
   for (const writer of writerRegistry.values()) {
     writer.close();
   }

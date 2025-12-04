@@ -2,15 +2,21 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { workerData } from "node:worker_threads";
 import { internalCreateLogger } from "./internal-logger";
-import type { RequiredLoggerOptions } from "./types";
-import { fileExists, getCutoffDate, parseArchiveFilename, parseLogFilename, parseRetention } from "./utilities";
+import type { ResolvedLoggerOptions } from "./types";
+import {
+  fileExists,
+  getCutoffDate,
+  parseArchiveFilename,
+  parseLogFilename,
+  parseRetention,
+} from "./utilities";
 
 /** Delete logs and archives older than the retention period */
-export async function runRetentionWorker(options: RequiredLoggerOptions) {
-  const { logRetention } = options;
+export async function runRetentionWorker(options: ResolvedLoggerOptions) {
+  const retentionPeriod = options.retention.period;
 
   // If no retention configured, nothing to do
-  if (!logRetention) return;
+  if (!retentionPeriod) return;
 
   try {
     const { logger, close } = internalCreateLogger({
@@ -21,15 +27,15 @@ export async function runRetentionWorker(options: RequiredLoggerOptions) {
       },
     });
 
-    const { logDir, archiveDir } = options;
+    const { logDir, archive } = options;
 
     try {
-      const { value, unit } = parseRetention(logRetention);
+      const { value, unit } = parseRetention(retentionPeriod);
       const now = new Date();
       const cutoffDate = getCutoffDate(now, value, unit);
 
       logger.info(
-        `Running retention worker (retention: ${logRetention}) - deleting files older than ${cutoffDate.toISOString()}`,
+        `Running retention worker (retention: ${retentionPeriod}) - deleting files older than ${cutoffDate.toISOString()}`,
       );
 
       let deletedLogs = 0;
@@ -55,7 +61,7 @@ export async function runRetentionWorker(options: RequiredLoggerOptions) {
       }
 
       // Process archive files
-      const archivePath = path.join(logDir, archiveDir);
+      const archivePath = path.join(logDir, archive.dir);
       if (await fileExists(archivePath)) {
         const archiveFiles = (await fs.readdir(archivePath)).filter((f) => f.endsWith(".tar.gz"));
 
@@ -93,4 +99,7 @@ export async function runRetentionWorker(options: RequiredLoggerOptions) {
   }
 }
 
-runRetentionWorker(workerData as RequiredLoggerOptions);
+// Only run when actually in a worker thread (not when imported as a module)
+if (workerData) {
+  runRetentionWorker(workerData as ResolvedLoggerOptions);
+}

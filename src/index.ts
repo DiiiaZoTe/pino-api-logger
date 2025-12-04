@@ -1,24 +1,37 @@
 import { startArchiver } from "./archiver";
+import { runArchiverWorker } from "./archiver-worker";
 import { DEFAULT_LOGGER_OPTIONS, DEFAULT_PACKAGE_NAME } from "./config";
 import { internalCreateLogger } from "./internal-logger";
 import {
+  cleanupLogRegistry,
   createArchiverController,
   createRetentionController,
   getOrCreateFileWriter,
-  resetLogRegistry,
 } from "./registry";
+import { runRetentionWorker } from "./retention-worker";
 import type {
   ArchiveFrequency,
   FileRotationFrequency,
   LoggerOptions,
   PinoLoggerExtended,
+  ResolvedLoggerOptions,
+  RetentionFormat,
 } from "./types";
 import { frequencyToHours, parseRetention, retentionToHours } from "./utilities";
 
-export { startArchiver, resetLogRegistry, getOrCreateFileWriter };
+export { startArchiver, cleanupLogRegistry, getOrCreateFileWriter };
 export type { PrettyOptions } from "pino-pretty";
 export type { ArchiverController, RetentionController } from "./registry";
-export type { CustomPinoOptions, LoggerOptions, PinoLoggerExtended } from "./types";
+export type {
+  ArchiveConfig,
+  ConsoleConfig,
+  CustomPinoOptions,
+  FileConfig,
+  LoggerOptions,
+  PinoLoggerExtended,
+  ResolvedLoggerOptions,
+  RetentionConfig,
+} from "./types";
 
 /**
  * Create a pino logger with archiver and retention support.
@@ -33,12 +46,12 @@ export function createLogger(loggerOptions: LoggerOptions = {}) {
 
   const archiver = createArchiverController(
     { ...options, logger: logger.child({ name: "archiver" }) },
-    !options.disableArchiving,
+    !options.archive.disabled,
   );
 
   const retention = createRetentionController(
     { ...options, logger: logger.child({ name: "retention" }) },
-    !!options.logRetention,
+    !!options.retention.period,
   );
 
   (logger as PinoLoggerExtended).getParams = () => ({
@@ -49,51 +62,58 @@ export function createLogger(loggerOptions: LoggerOptions = {}) {
   (logger as PinoLoggerExtended).startArchiver = archiver.start;
   (logger as PinoLoggerExtended).stopRetention = retention.stop;
   (logger as PinoLoggerExtended).startRetention = retention.start;
+  (logger as PinoLoggerExtended).runArchiver = async () => {
+    await runArchiverWorker({ ...options, archive: archiver.getConfig() });
+  };
+  (logger as PinoLoggerExtended).runRetention = async () => {
+    await runRetentionWorker({ ...options, retention: retention.getConfig() });
+  };
   (logger as PinoLoggerExtended).close = async () => await close();
+
   return logger as PinoLoggerExtended;
 }
 
 /**
  * Validate constraint hierarchy:
- * logRetention >= archiveFrequency >= fileRotationFrequency
+ * retention.period >= archive.frequency >= file.rotationFrequency
  */
 function validateConstraintHierarchy(
   fileRotationFrequency: FileRotationFrequency,
   archiveFrequency: ArchiveFrequency,
-  logRetention: string | undefined,
-  disableArchiving: boolean,
+  retentionPeriod: RetentionFormat | undefined,
+  archiveDisabled: boolean,
 ) {
   const rotationHours = frequencyToHours(fileRotationFrequency);
   const archiveHours = frequencyToHours(archiveFrequency);
 
   // archiveFrequency >= fileRotationFrequency
-  if (!disableArchiving && archiveHours < rotationHours) {
+  if (!archiveDisabled && archiveHours < rotationHours) {
     throw new Error(
       `[${DEFAULT_PACKAGE_NAME}] Invalid configuration: archiveFrequency ("${archiveFrequency}") ` +
-        `must be >= fileRotationFrequency ("${fileRotationFrequency}"). ` +
-        `Cannot archive incomplete rotation periods.`,
+      `must be >= fileRotationFrequency ("${fileRotationFrequency}"). ` +
+      `Cannot archive incomplete rotation periods.`,
     );
   }
 
-  if (logRetention) {
-    const retentionHours = retentionToHours(logRetention);
-    const { unit } = parseRetention(logRetention);
+  if (retentionPeriod) {
+    const retentionHours = retentionToHours(retentionPeriod);
+    const { unit } = parseRetention(retentionPeriod);
 
     // logRetention >= archiveFrequency (when archiving is enabled)
-    if (!disableArchiving && retentionHours < archiveHours) {
+    if (!archiveDisabled && retentionHours < archiveHours) {
       throw new Error(
-        `[${DEFAULT_PACKAGE_NAME}] Invalid configuration: logRetention ("${logRetention}") ` +
-          `must be >= archiveFrequency ("${archiveFrequency}"). ` +
-          `Cannot delete files before they can be archived.`,
+        `[${DEFAULT_PACKAGE_NAME}] Invalid configuration: logRetention ("${retentionPeriod}") ` +
+        `must be >= archiveFrequency ("${archiveFrequency}"). ` +
+        `Cannot delete files before they can be archived.`,
       );
     }
 
     // logRetention >= fileRotationFrequency
     if (retentionHours < rotationHours) {
       throw new Error(
-        `[${DEFAULT_PACKAGE_NAME}] Invalid configuration: logRetention ("${logRetention}") ` +
-          `must be >= fileRotationFrequency ("${fileRotationFrequency}"). ` +
-          `Cannot delete files before rotation period ends.`,
+        `[${DEFAULT_PACKAGE_NAME}] Invalid configuration: logRetention ("${retentionPeriod}") ` +
+        `must be >= fileRotationFrequency ("${fileRotationFrequency}"). ` +
+        `Cannot delete files before rotation period ends.`,
       );
     }
 
@@ -101,76 +121,113 @@ function validateConstraintHierarchy(
     // e.g., can't have hourly retention with daily files
     if (unit === "h" && fileRotationFrequency === "daily") {
       throw new Error(
-        `[${DEFAULT_PACKAGE_NAME}] Invalid configuration: logRetention with hours ("${logRetention}") ` +
-          `cannot be used with daily file rotation. Use "d" (days) or higher units.`,
+        `[${DEFAULT_PACKAGE_NAME}] Invalid configuration: logRetention with hours ("${retentionPeriod}") ` +
+        `cannot be used with daily file rotation. Use "d" (days) or higher units.`,
       );
     }
   }
 }
 
-/** Validate the logger options and add default values if not provided */
-function validateLoggerOptions(options: LoggerOptions) {
-  if (options.maxBufferLines && options.maxBufferLines < 1) {
+/**
+ * Validate the logger options and apply defaults.
+ * Returns a fully resolved options object with nested structure.
+ */
+function validateLoggerOptions(options: LoggerOptions): ResolvedLoggerOptions {
+  // Extract nested options with defaults
+  const fileOpts = options.file ?? {};
+  const consoleOpts = options.console ?? {};
+  const archiveOpts = options.archive ?? {};
+  const retentionOpts = options.retention ?? {};
+
+  // Validate file options
+  if (fileOpts.maxBufferLines !== undefined && fileOpts.maxBufferLines < 1) {
     console.warn(`[${DEFAULT_PACKAGE_NAME}] Max buffer size is less than 1, setting to 1`);
-    options.maxBufferLines = 1;
+    fileOpts.maxBufferLines = 1;
   }
 
-  if (options.maxBufferKilobytes && options.maxBufferKilobytes < 1) {
+  if (fileOpts.maxBufferKilobytes !== undefined && fileOpts.maxBufferKilobytes < 1) {
     console.warn(`[${DEFAULT_PACKAGE_NAME}] Max buffer KB size is less than 1, setting to 1KB`);
-    options.maxBufferKilobytes = 1;
+    fileOpts.maxBufferKilobytes = 1;
   }
 
-  if (options.maxLogSizeMegabytes && options.maxLogSizeMegabytes <= 1) {
+  if (fileOpts.maxLogSizeMegabytes !== undefined && fileOpts.maxLogSizeMegabytes <= 1) {
     console.warn(`[${DEFAULT_PACKAGE_NAME}] Max log size is less than 1MB, setting to 1MB`);
-    options.maxLogSizeMegabytes = 1;
+    fileOpts.maxLogSizeMegabytes = 1;
   }
 
-  if (options.flushInterval && options.flushInterval < 20) {
+  if (fileOpts.flushInterval !== undefined && fileOpts.flushInterval < 20) {
     console.warn(`[${DEFAULT_PACKAGE_NAME}] Flush interval is less than 20ms, setting to 20ms`);
-    options.flushInterval = 20;
+    fileOpts.flushInterval = 20;
   }
 
-  const optionsWithDefaults = {
-    ...DEFAULT_LOGGER_OPTIONS,
-    ...options,
+  // Build resolved options with nested structure
+  const resolved: ResolvedLoggerOptions = {
+    logDir: options.logDir ?? DEFAULT_LOGGER_OPTIONS.logDir,
+    level: options.level ?? DEFAULT_LOGGER_OPTIONS.level,
+    pinoOptions: options.pinoOptions,
+    file: {
+      enabled: fileOpts.enabled ?? DEFAULT_LOGGER_OPTIONS.file.enabled,
+      rotationFrequency:
+        fileOpts.rotationFrequency ?? DEFAULT_LOGGER_OPTIONS.file.rotationFrequency,
+      flushInterval: fileOpts.flushInterval ?? DEFAULT_LOGGER_OPTIONS.file.flushInterval,
+      maxBufferLines: fileOpts.maxBufferLines ?? DEFAULT_LOGGER_OPTIONS.file.maxBufferLines,
+      maxBufferKilobytes:
+        fileOpts.maxBufferKilobytes ?? DEFAULT_LOGGER_OPTIONS.file.maxBufferKilobytes,
+      maxLogSizeMegabytes:
+        fileOpts.maxLogSizeMegabytes ?? DEFAULT_LOGGER_OPTIONS.file.maxLogSizeMegabytes,
+    },
+    console: {
+      enabled: consoleOpts.enabled ?? DEFAULT_LOGGER_OPTIONS.console.enabled,
+      pretty: consoleOpts.pretty ?? DEFAULT_LOGGER_OPTIONS.console.pretty,
+    },
+    archive: {
+      frequency: archiveOpts.frequency ?? DEFAULT_LOGGER_OPTIONS.archive.frequency,
+      runOnCreation: archiveOpts.runOnCreation ?? DEFAULT_LOGGER_OPTIONS.archive.runOnCreation,
+      dir: archiveOpts.dir ?? DEFAULT_LOGGER_OPTIONS.archive.dir,
+      logging: archiveOpts.logging ?? DEFAULT_LOGGER_OPTIONS.archive.logging,
+      disabled: archiveOpts.disabled ?? DEFAULT_LOGGER_OPTIONS.archive.disabled,
+    },
+    retention: {
+      period: retentionOpts.period ?? DEFAULT_LOGGER_OPTIONS.retention.period,
+    },
   };
 
   //* Runtime safety checks below this point
 
   // Validate retention format if provided
-  if (optionsWithDefaults.logRetention) {
+  if (resolved.retention.period) {
     try {
-      parseRetention(optionsWithDefaults.logRetention);
+      parseRetention(resolved.retention.period);
     } catch {
       throw new Error(
-        `[${DEFAULT_PACKAGE_NAME}] Invalid logRetention format: "${optionsWithDefaults.logRetention}". ` +
+        `[${DEFAULT_PACKAGE_NAME}] Invalid logRetention format: "${resolved.retention.period}". ` +
         `Expected format: <number><unit> (e.g., "7d", "3m", "1y")`,
       );
     }
   }
 
-  // Ensure at least one output is enabled (toFile or toConsole)
+  // Ensure at least one output is enabled (file or console)
   // This check is for JavaScript users or those bypassing TypeScript's type system
-  if (optionsWithDefaults.toFile === false && optionsWithDefaults.toConsole === false) {
-    console.error(
-      `[${DEFAULT_PACKAGE_NAME}] Both toFile and toConsole are false. At least one must be true. Setting toFile to true.`,
+  if (resolved.file.enabled === false && resolved.console.enabled === false) {
+    globalThis.console.error(
+      `[${DEFAULT_PACKAGE_NAME}] Both file.enabled and console.enabled are false. At least one must be true. Setting file.enabled to true.`,
     );
-    optionsWithDefaults.toFile = true;
+    resolved.file.enabled = true;
   }
 
   // If not writing to file, disable archiving and retention (nothing to archive/retain)
-  if (optionsWithDefaults.toFile === false) {
-    optionsWithDefaults.disableArchiving = true;
-    optionsWithDefaults.logRetention = undefined;
+  if (resolved.file.enabled === false) {
+    resolved.archive.disabled = true;
+    resolved.retention.period = undefined;
   }
 
   // Validate constraint hierarchy
   validateConstraintHierarchy(
-    optionsWithDefaults.fileRotationFrequency,
-    optionsWithDefaults.archiveFrequency,
-    optionsWithDefaults.logRetention,
-    optionsWithDefaults.disableArchiving,
+    resolved.file.rotationFrequency,
+    resolved.archive.frequency,
+    resolved.retention.period,
+    resolved.archive.disabled,
   );
 
-  return optionsWithDefaults;
+  return resolved;
 }

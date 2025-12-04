@@ -2,13 +2,14 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { Hono } from "hono";
 import pino from "pino";
-import { createLogger, resetLogRegistry } from "../src/index";
+import { cleanupLogRegistry, createLogger } from "../src/index";
 import type { PinoLoggerExtended } from "../src/types";
 
 const BENCHMARK_DURATION_MS = 5000; // 5 seconds per test
 const CONCURRENT_REQUESTS = 100;
-const BENCHMARK_LOG_DIR = "./logs-benchmark";
-const BENCHMARK_RESULTS_FILE = "./tests/benchmark-results.txt";
+const BENCHMARK_LOG_DIR_BASE = "./logs/benchmark/";
+const BENCHMARK_LOG_DIR = `${BENCHMARK_LOG_DIR_BASE}test`;
+const BENCHMARK_RESULTS_FILE = `${BENCHMARK_LOG_DIR_BASE}results.txt`;
 
 // Parse command line flags
 const INCLUDE_CONSOLE_TEST = process.argv.includes("--with-console");
@@ -23,9 +24,15 @@ interface BenchmarkResult {
   maxLatency: number;
 }
 
+async function createBenchmarkLogDir() {
+  try {
+    await fs.mkdir(BENCHMARK_LOG_DIR_BASE, { recursive: true });
+  } catch { }
+}
+
 async function cleanupBenchmarkDir() {
   try {
-    await fs.rm(BENCHMARK_LOG_DIR, { recursive: true });
+    await fs.rm(BENCHMARK_LOG_DIR_BASE, { recursive: true });
   } catch { }
 }
 
@@ -90,8 +97,7 @@ async function runBenchmark(
   }
 
   // Reset logger registry for next test
-  resetLogRegistry();
-  await cleanupBenchmarkDir();
+  cleanupLogRegistry();
 
   // Wait a bit for cleanup
   await new Promise((resolve) => setTimeout(resolve, 500));
@@ -171,10 +177,10 @@ function createPinoSilentServer(): Hono {
 
 // Test 3: Raw pino with file destination (sync write)
 function createPinoFileServer(): Hono {
-  const logFile = path.join(BENCHMARK_LOG_DIR, "pino-raw.log");
+  const logFile = path.join(`${BENCHMARK_LOG_DIR}-3`, "pino-raw.log");
   // Ensure directory exists
   try {
-    require("node:fs").mkdirSync(BENCHMARK_LOG_DIR, { recursive: true });
+    require("node:fs").mkdirSync(`${BENCHMARK_LOG_DIR}-3`, { recursive: true });
   } catch { }
   const dest = pino.destination({ dest: logFile, sync: false });
   const logger = pino({ level: "info" }, dest);
@@ -185,9 +191,9 @@ function createPinoFileServer(): Hono {
 // Defaults: flushInterval: 200ms, maxBufferLines: 500, maxBufferKilobytes: 1024
 function createLoggerDefaultBufferServer(): Hono {
   const logger = createLogger({
-    logDir: BENCHMARK_LOG_DIR,
-    toConsole: false,
-    runArchiveOnCreation: false,
+    logDir: `${BENCHMARK_LOG_DIR}-4`,
+    console: { enabled: false },
+    archive: { runOnCreation: false },
   });
   return createServer(logger);
 }
@@ -196,12 +202,14 @@ function createLoggerDefaultBufferServer(): Hono {
 // High: flushInterval: 1000ms, maxBufferLines: 2000, maxBufferKilobytes: 4096
 function createLoggerHighBufferServer(): Hono {
   const logger = createLogger({
-    logDir: BENCHMARK_LOG_DIR,
-    toConsole: false,
-    runArchiveOnCreation: false,
-    flushInterval: 1000, // 1 second flush interval
-    maxBufferLines: 2000, // 2000 lines buffer
-    maxBufferKilobytes: 4096, // 4MB buffer
+    logDir: `${BENCHMARK_LOG_DIR}-5`,
+    console: { enabled: false },
+    archive: { runOnCreation: false },
+    file: {
+      flushInterval: 1000, // 1 second flush interval
+      maxBufferLines: 2000, // 2000 lines buffer
+      maxBufferKilobytes: 4096, // 4MB buffer
+    },
   });
   return createServer(logger);
 }
@@ -210,12 +218,14 @@ function createLoggerHighBufferServer(): Hono {
 // Minimal: flushInterval: 20ms, maxBufferLines: 1, maxBufferKilobytes: 1
 function createLoggerMinimalBufferServer(): Hono {
   const logger = createLogger({
-    logDir: BENCHMARK_LOG_DIR,
-    toConsole: false,
-    runArchiveOnCreation: false,
-    flushInterval: 20, // Minimum allowed (20ms)
-    maxBufferLines: 1, // Minimum - flush after every line
-    maxBufferKilobytes: 1, // Minimum - 1KB buffer
+    logDir: `${BENCHMARK_LOG_DIR}-6`,
+    console: { enabled: false },
+    archive: { runOnCreation: false },
+    file: {
+      flushInterval: 20, // Minimum allowed (20ms)
+      maxBufferLines: 1, // Minimum - flush after every line
+      maxBufferKilobytes: 1, // Minimum - 1KB buffer
+    },
   });
   return createServer(logger);
 }
@@ -223,9 +233,9 @@ function createLoggerMinimalBufferServer(): Hono {
 // Test 7: pino-api-logger with toConsole: true (with stdout pretty printing)
 function createLoggerWithConsoleServer(): Hono {
   const logger = createLogger({
-    logDir: BENCHMARK_LOG_DIR,
-    toConsole: true,
-    runArchiveOnCreation: false,
+    logDir: `${BENCHMARK_LOG_DIR}-7`,
+    console: { enabled: true },
+    archive: { runOnCreation: false },
   });
   return createServer(logger);
 }
@@ -287,6 +297,9 @@ ${hLine("╚", "╝", "╩")}`;
 }
 
 async function main() {
+  await cleanupBenchmarkDir();
+  await createBenchmarkLogDir();
+
   console.log("\n🚀 Starting Pino API Logger Benchmark\n");
   console.log(`Duration per test: ${BENCHMARK_DURATION_MS / 1000}s`);
   console.log(`Concurrent workers: ${CONCURRENT_REQUESTS}`);
@@ -294,8 +307,6 @@ async function main() {
     console.log(`\n💡 Tip: Run with --with-console to include toConsole: true test`);
   }
   console.log("");
-
-  await cleanupBenchmarkDir();
 
   // Initialize results file with header
   const header = `Pino API Logger Benchmark Results

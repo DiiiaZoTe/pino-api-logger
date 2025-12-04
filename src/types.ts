@@ -22,96 +22,38 @@ export type ParsedRetention = {
   unit: RetentionUnit;
 };
 
+// ============================================================================
+// Configuration types (used in both public API and internally)
+// ============================================================================
+
 /**
- * Type-safe output configuration that ensures at least one output (file or console) is enabled.
- * - If `toFile` is false, `toConsole` must be true or omitted (defaults to true)
- * - If `toFile` is true or omitted, `toConsole` can be any value
+ * File output configuration options.
  */
-export type OutputConfig =
-  | { toFile?: true; toConsole?: boolean } // toFile true or omitted
-  | { toFile: false; toConsole?: true }; // toFile false requires toConsole true
-
-export type LoggerOptions = Omit<BaseLoggerOptions, "toFile" | "toConsole"> &
-  FileWriterOptions &
-  ArchiverOptions &
-  RetentionOptions &
-  OutputConfig;
-/** pinoOptions and logRetention remain optional */
-export type RequiredLoggerOptions = Required<Omit<LoggerOptions, "pinoOptions" | "logRetention">> &
-  Pick<LoggerOptions, "pinoOptions" | "logRetention">;
-export type LoggerWithArchiverOptions = RequiredLoggerOptions & {
-  logger: pino.Logger;
-};
-export type PinoLoggerExtended = pino.Logger<never, boolean> & {
-  stopArchiver: () => void;
-  startArchiver: () => void;
-  stopRetention: () => void;
-  startRetention: () => void;
-  getParams: () => RequiredLoggerOptions;
-  close: () => Promise<void>;
-};
-
-export type BaseLoggerOptions = {
-  /**
-   * The directory to write the logs to from the root of process execution.
-   * @default 'logs'
-   */
-  logDir?: string;
-  /** The default log level to use
-   * @default 'info'
-   */
-  level?: string;
-  /** Whether to pretty print the console output (ignored in production)
-   * @default false
-   */
-  pinoPretty?: PrettyOptions;
-  /** Whether to write to the console
-   * @default true
-   */
-  toConsole?: boolean;
+export type FileConfig = {
   /**
    * Whether to write logs to a file.
-   * At least one of `toFile` or `toConsole` must be true.
    * @default true
    */
-  toFile?: boolean;
-  /**
-   * Custom pino options to override/extend the default configuration.
-   * Transport is managed internally and cannot be overridden.
-   * Options like `level`, `base`, `timestamp`, `formatters` can be customized here.
-   * Note: If both `level` and `pinoOptions.level` are provided, `pinoOptions.level` takes precedence.
-   * @default undefined (uses sensible defaults)
-   * @example
-   * ```ts
-   * pinoOptions: {
-   *   base: { service: 'my-api' },
-   *   messageKey: 'message',
-   *   customLevels: { http: 35 },
-   * }
-   * ```
-   */
-  pinoOptions?: CustomPinoOptions;
-};
-
-export type FileWriterOptions = {
-  /** The directory to write the logs to from the root of process execution. */
-  logDir?: string;
+  enabled?: boolean;
   /**
    * The frequency at which log files rotate.
    * - "daily": Creates files like `YYYY-MM-DD.log`
    * - "hourly": Creates files like `YYYY-MM-DD~HH.log`
    * @default "daily"
    */
-  fileRotationFrequency?: FileRotationFrequency;
-  /** The interval to flush the log buffer at in milliseconds.
+  rotationFrequency?: FileRotationFrequency;
+  /**
+   * The interval to flush the log buffer at in milliseconds.
    * @default 200 (minimum 20 -> 20ms flush interval)
    */
   flushInterval?: number;
-  /** The maximum number of log lines to buffer before flushing.
+  /**
+   * The maximum number of log lines to buffer before flushing.
    * @default 500 (minimum 1 -> 1 line buffer)
    */
   maxBufferLines?: number;
-  /** The maximum number of kilobytes to buffer before flushing.
+  /**
+   * The maximum number of kilobytes to buffer before flushing.
    * @default 1024 (1MB)
    */
   maxBufferKilobytes?: number;
@@ -123,9 +65,26 @@ export type FileWriterOptions = {
   maxLogSizeMegabytes?: number;
 };
 
-export type ArchiverOptions = {
-  /** The directory to write the logs to from the root of process execution. */
-  logDir?: string;
+/**
+ * Console output configuration options.
+ */
+export type ConsoleConfig = {
+  /**
+   * Whether to write to the console.
+   * @default true
+   */
+  enabled?: boolean;
+  /**
+   * Pretty print options for console output.
+   * @default { singleLine: true, colorize: true, ignore: "pid,hostname", translateTime: "yyyy-mm-dd HH:MM:ss.l" }
+   */
+  pretty?: PrettyOptions;
+};
+
+/**
+ * Archive configuration options.
+ */
+export type ArchiveConfig = {
   /**
    * The frequency at which logs are archived.
    * - "hourly": Archives accumulated hourly log files
@@ -134,31 +93,34 @@ export type ArchiverOptions = {
    * - "monthly": Archives accumulated monthly log files
    * @default "monthly"
    */
-  archiveFrequency?: ArchiveFrequency;
-  /** Whether to run the archive function immediately on logger creation.
-   * @default true
-   */
-  runArchiveOnCreation?: boolean;
+  frequency?: ArchiveFrequency;
   /**
-   * The directory to write the archives to from the root of process execution.
-   * @default 'archives' (relative to the log directory)
-   */
-  archiveDir?: string;
-  /** Whether to log the archive process.
+   * Whether to run the archive function immediately on logger creation.
    * @default true
    */
-  archiveLogging?: boolean;
+  runOnCreation?: boolean;
+  /**
+   * The directory to write the archives to (relative to logDir).
+   * @default "archives"
+   */
+  dir?: string;
+  /**
+   * Whether to log the archive process.
+   * @default true
+   */
+  logging?: boolean;
   /**
    * Whether to completely disable the archiving process.
    * When true, no archiver will be started and `startArchiver` must be called manually if needed.
    * @default false
    */
-  disableArchiving?: boolean;
+  disabled?: boolean;
 };
 
-export type RetentionOptions = {
-  /** The directory to write the logs to from the root of process execution. */
-  logDir?: string;
+/**
+ * Retention configuration options.
+ */
+export type RetentionConfig = {
   /**
    * Log retention period. Deletes both raw log files and archives older than this period.
    * Format: <number><unit> where unit is:
@@ -176,5 +138,135 @@ export type RetentionOptions = {
    *
    * @default undefined (no retention - logs kept indefinitely)
    */
-  logRetention?: RetentionFormat;
+  period?: RetentionFormat;
+};
+
+// ============================================================================
+// Public-facing structured options (used by createLogger)
+// ============================================================================
+
+/**
+ * Logger options for createLogger().
+ * Structured configuration with grouped options for file, console, archive, and retention.
+ */
+export type LoggerOptions = {
+  /**
+   * The directory to write the logs to from the root of process execution.
+   * @default "logs"
+   */
+  logDir?: string;
+  /**
+   * The default log level to use.
+   * @default "info"
+   */
+  level?: string;
+  /**
+   * Custom pino options to override/extend the default configuration.
+   * Transport is managed internally and cannot be overridden.
+   * Options like `level`, `base`, `timestamp`, `formatters` can be customized here.
+   * Note: If both `level` and `pinoOptions.level` are provided, `pinoOptions.level` takes precedence.
+   * @default undefined (uses sensible defaults)
+   * @example
+   * ```ts
+   * pinoOptions: {
+   *   base: { service: 'my-api' },
+   *   messageKey: 'message',
+   *   customLevels: { http: 35 },
+   * }
+   * ```
+   */
+  pinoOptions?: CustomPinoOptions;
+  /**
+   * File output configuration.
+   * @default { enabled: true, rotationFrequency: "daily", flushInterval: 200, maxBufferLines: 500, maxBufferKilobytes: 1024, maxLogSizeMegabytes: 100 }
+   */
+  file?: FileConfig;
+  /**
+   * Console output configuration.
+   * @default { enabled: true, pretty: { singleLine: true, colorize: true, ... } }
+   */
+  console?: ConsoleConfig;
+  /**
+   * Archive configuration.
+   * @default { frequency: "monthly", runOnCreation: true, dir: "archives", logging: true, disabled: false }
+   */
+  archive?: ArchiveConfig;
+  /**
+   * Retention configuration.
+   * @default { period: undefined } (no retention - logs kept indefinitely)
+   */
+  retention?: RetentionConfig;
+};
+
+// ============================================================================
+// Resolved options (internal use - all defaults applied)
+// ============================================================================
+
+/** File config with all defaults applied */
+export type ResolvedFileConfig = {
+  enabled: boolean;
+  rotationFrequency: FileRotationFrequency;
+  flushInterval: number;
+  maxBufferLines: number;
+  maxBufferKilobytes: number;
+  maxLogSizeMegabytes: number;
+};
+
+/** Console config with all defaults applied */
+export type ResolvedConsoleConfig = {
+  enabled: boolean;
+  pretty: PrettyOptions;
+};
+
+/** Archive config with all defaults applied */
+export type ResolvedArchiveConfig = {
+  frequency: ArchiveFrequency;
+  runOnCreation: boolean;
+  dir: string;
+  logging: boolean;
+  disabled: boolean;
+};
+
+/** Retention config (period remains optional) */
+export type ResolvedRetentionConfig = {
+  period?: RetentionFormat;
+};
+
+/**
+ * Logger options with all defaults applied.
+ * Used internally after validateLoggerOptions() processes the structured LoggerOptions.
+ */
+export type ResolvedLoggerOptions = {
+  logDir: string;
+  level: string;
+  pinoOptions?: CustomPinoOptions;
+  file: ResolvedFileConfig;
+  console: ResolvedConsoleConfig;
+  archive: ResolvedArchiveConfig;
+  retention: ResolvedRetentionConfig;
+};
+
+/** Options passed to archiver/retention controllers (includes logger instance) */
+export type LoggerWithArchiverOptions = ResolvedLoggerOptions & {
+  logger: pino.Logger;
+};
+
+/** Extended pino logger with archiver and retention control methods */
+export type PinoLoggerExtended = pino.Logger<never, boolean> & {
+  /** Stop the archiver cron scheduler */
+  stopArchiver: () => void;
+  /** Start the archiver cron scheduler */
+  startArchiver: () => void;
+  /** Stop the retention cron scheduler */
+  stopRetention: () => void;
+  /** Start the retention cron scheduler */
+  startRetention: () => void;
+  /** Run archiver immediately (async, returns when complete) */
+  runArchiver: () => Promise<void>;
+  /** Run retention cleanup immediately (async, returns when complete) */
+  runRetention: () => Promise<void>;
+  /** Get the resolved logger options */
+  getParams: () => ResolvedLoggerOptions;
+  /** Close the logger and flush any remaining buffered logs */
+  close: () => Promise<void>;
 };
