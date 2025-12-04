@@ -1,4 +1,6 @@
+import cluster from "node:cluster";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { Hono } from "hono";
 import pino from "pino";
@@ -6,13 +8,16 @@ import { cleanupLogRegistry, createLogger } from "../src/index";
 import type { PinoLoggerExtended } from "../src/types";
 
 const BENCHMARK_DURATION_MS = 5000; // 5 seconds per test
-const CONCURRENT_REQUESTS = 100;
+const CONCURRENCY_PER_CORE = 1000; // concurrent requests per CPU core
 const BENCHMARK_LOG_DIR_BASE = "./logs/benchmark/";
 const BENCHMARK_LOG_DIR = `${BENCHMARK_LOG_DIR_BASE}test`;
 const BENCHMARK_RESULTS_FILE = `${BENCHMARK_LOG_DIR_BASE}results.txt`;
+const BENCHMARK_PORT = 54321; // Fixed port for cluster communication
 
 // Parse command line flags
 const INCLUDE_CONSOLE_TEST = process.argv.includes("--with-console");
+const MULTI_CORE_MODE = process.argv.includes("--multi-core");
+const CPU_COUNT = os.cpus().length;
 
 interface BenchmarkResult {
   name: string;
@@ -23,6 +28,25 @@ interface BenchmarkResult {
   minLatency: number;
   maxLatency: number;
 }
+
+interface WorkerResult {
+  latencies: number[];
+  totalRequests: number;
+}
+
+interface WorkerMessage {
+  type: "start" | "result" | "ready";
+  config?: {
+    url: string;
+    durationMs: number;
+    concurrency: number;
+  };
+  result?: WorkerResult;
+}
+
+// ============================================================================
+// Utility Functions
+// ============================================================================
 
 async function createBenchmarkLogDir() {
   try {
@@ -36,88 +60,6 @@ async function cleanupBenchmarkDir() {
   } catch { }
 }
 
-async function runBenchmark(
-  name: string,
-  setupServer: () => Hono,
-  suppressConsole = false
-): Promise<BenchmarkResult> {
-  // Suppress console output if requested (for toConsole: true test)
-  const originalStdoutWrite = process.stdout.write.bind(process.stdout);
-  if (suppressConsole) {
-    process.stdout.write = () => true;
-  }
-
-  const app = setupServer();
-  const server = Bun.serve({
-    port: 0, // Random available port
-    fetch: app.fetch,
-  });
-
-  const baseUrl = `http://localhost:${server.port}`;
-  const latencies: number[] = [];
-  let totalRequests = 0;
-  let running = true;
-
-  const startTime = performance.now();
-
-  // Stop after duration
-  const timeout = setTimeout(() => {
-    running = false;
-  }, BENCHMARK_DURATION_MS);
-
-  // Run concurrent request workers
-  const workers = Array.from({ length: CONCURRENT_REQUESTS }, async () => {
-    while (running) {
-      const reqStart = performance.now();
-      try {
-        const response = await fetch(`${baseUrl}/api/test`);
-        if (response.ok) {
-          await response.text();
-          const latency = performance.now() - reqStart;
-          latencies.push(latency);
-          totalRequests++;
-        }
-      } catch {
-        // Ignore errors during shutdown
-      }
-    }
-  });
-
-  await Promise.all(workers);
-  clearTimeout(timeout);
-
-  const endTime = performance.now();
-  const duration = endTime - startTime;
-
-  server.stop(true);
-
-  // Restore console output
-  if (suppressConsole) {
-    process.stdout.write = originalStdoutWrite;
-  }
-
-  // Reset logger registry for next test
-  cleanupLogRegistry();
-
-  // Wait a bit for cleanup
-  await new Promise((resolve) => setTimeout(resolve, 500));
-
-  const avgLatency = latencies.length > 0
-    ? latencies.reduce((a, b) => a + b, 0) / latencies.length
-    : 0;
-
-  return {
-    name,
-    totalRequests,
-    duration,
-    requestsPerSecond: (totalRequests / duration) * 1000,
-    avgLatency,
-    minLatency: latencies.length > 0 ? Math.min(...latencies) : 0,
-    maxLatency: latencies.length > 0 ? Math.max(...latencies) : 0,
-  };
-}
-
-// Generate a random request ID (simulates UUID-like behavior)
 function generateRequestId(): string {
   const chars = "abcdef0123456789";
   let id = "";
@@ -128,7 +70,6 @@ function generateRequestId(): string {
   return id;
 }
 
-// Generate a controlled random string of specified length
 function generateRandomPayload(length: number): string {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
   let result = "";
@@ -138,13 +79,16 @@ function generateRandomPayload(length: number): string {
   return result;
 }
 
+// ============================================================================
+// Server Creation Functions
+// ============================================================================
+
 function createServer(logger?: pino.Logger | PinoLoggerExtended) {
   const app = new Hono();
   if (logger) {
     app.use(async (c, next) => {
-      // Simulate realistic request logging with varied payload
       const requestId = generateRequestId();
-      const payload = generateRandomPayload(64); // 64 char random string
+      const payload = generateRandomPayload(64);
       logger.info(
         {
           requestId,
@@ -164,84 +108,246 @@ function createServer(logger?: pino.Logger | PinoLoggerExtended) {
   return app;
 }
 
-// Test 1: No logger (baseline)
-function createBaselineServer(): Hono {
-  return createServer();
-}
+type LoggerFactory = () => pino.Logger | PinoLoggerExtended | undefined;
 
-// Test 2: Raw pino (silent - no output)
-function createPinoSilentServer(): Hono {
-  const logger = pino({ level: "silent" });
-  return createServer(logger);
-}
+const loggerFactories: Record<string, LoggerFactory> = {
+  baseline: () => undefined,
+  "pino-silent": () => pino({ level: "silent" }),
+  "pino-file": () => {
+    const logFile = path.join(`${BENCHMARK_LOG_DIR}-3`, "pino-raw.log");
+    try {
+      require("node:fs").mkdirSync(`${BENCHMARK_LOG_DIR}-3`, { recursive: true });
+    } catch { }
+    const dest = pino.destination({ dest: logFile, sync: false });
+    return pino({ level: "info" }, dest);
+  },
+  "api-logger-default": () =>
+    createLogger({
+      logDir: `${BENCHMARK_LOG_DIR}-4`,
+      console: { enabled: false },
+      archive: { runOnCreation: false },
+    }),
+  "api-logger-high-buffer": () =>
+    createLogger({
+      logDir: `${BENCHMARK_LOG_DIR}-5`,
+      console: { enabled: false },
+      archive: { runOnCreation: false },
+      file: {
+        flushInterval: 1000,
+        maxBufferLines: 2000,
+        maxBufferKilobytes: 4096,
+      },
+    }),
+  "api-logger-min-buffer": () =>
+    createLogger({
+      logDir: `${BENCHMARK_LOG_DIR}-6`,
+      console: { enabled: false },
+      archive: { runOnCreation: false },
+      file: {
+        flushInterval: 20,
+        maxBufferLines: 1,
+        maxBufferKilobytes: 1,
+      },
+    }),
+  "api-logger-console": () =>
+    createLogger({
+      logDir: `${BENCHMARK_LOG_DIR}-7`,
+      console: { enabled: true },
+      archive: { runOnCreation: false },
+    }),
+};
 
-// Test 3: Raw pino with file destination (sync write)
-function createPinoFileServer(): Hono {
-  const logFile = path.join(`${BENCHMARK_LOG_DIR}-3`, "pino-raw.log");
-  // Ensure directory exists
-  try {
-    require("node:fs").mkdirSync(`${BENCHMARK_LOG_DIR}-3`, { recursive: true });
-  } catch { }
-  const dest = pino.destination({ dest: logFile, sync: false });
-  const logger = pino({ level: "info" }, dest);
-  return createServer(logger);
-}
+// ============================================================================
+// Benchmark Client (runs in worker processes)
+// ============================================================================
 
-// Test 4: pino-api-logger with default buffer settings (toConsole: false)
-// Defaults: flushInterval: 200ms, maxBufferLines: 500, maxBufferKilobytes: 1024
-function createLoggerDefaultBufferServer(): Hono {
-  const logger = createLogger({
-    logDir: `${BENCHMARK_LOG_DIR}-4`,
-    console: { enabled: false },
-    archive: { runOnCreation: false },
+async function runBenchmarkClient(url: string, durationMs: number, concurrency: number): Promise<WorkerResult> {
+  const latencies: number[] = [];
+  let totalRequests = 0;
+  let running = true;
+
+  const timeout = setTimeout(() => {
+    running = false;
+  }, durationMs);
+
+  const workers = Array.from({ length: concurrency }, async () => {
+    while (running) {
+      const reqStart = performance.now();
+      try {
+        const response = await fetch(url);
+        if (response.ok) {
+          await response.text();
+          const latency = performance.now() - reqStart;
+          latencies.push(latency);
+          totalRequests++;
+        }
+      } catch {
+        // Ignore errors during shutdown
+      }
+    }
   });
-  return createServer(logger);
+
+  await Promise.all(workers);
+  clearTimeout(timeout);
+
+  return { latencies, totalRequests };
 }
 
-// Test 5: pino-api-logger with high buffer values (toConsole: false)
-// High: flushInterval: 1000ms, maxBufferLines: 2000, maxBufferKilobytes: 4096
-function createLoggerHighBufferServer(): Hono {
-  const logger = createLogger({
-    logDir: `${BENCHMARK_LOG_DIR}-5`,
-    console: { enabled: false },
-    archive: { runOnCreation: false },
-    file: {
-      flushInterval: 1000, // 1 second flush interval
-      maxBufferLines: 2000, // 2000 lines buffer
-      maxBufferKilobytes: 4096, // 4MB buffer
-    },
+// ============================================================================
+// Single-Core Benchmark (Original Implementation)
+// ============================================================================
+
+async function runSingleCoreBenchmark(
+  name: string,
+  loggerType: string,
+  suppressConsole = false
+): Promise<BenchmarkResult> {
+  const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+  if (suppressConsole) {
+    process.stdout.write = () => true;
+  }
+
+  const logger = loggerFactories[loggerType]?.();
+  const app = createServer(logger);
+  const server = Bun.serve({
+    port: 0,
+    fetch: app.fetch,
   });
-  return createServer(logger);
+
+  const baseUrl = `http://localhost:${server.port}/api/test`;
+  const startTime = performance.now();
+
+  const result = await runBenchmarkClient(baseUrl, BENCHMARK_DURATION_MS, CONCURRENCY_PER_CORE);
+
+  const endTime = performance.now();
+  const duration = endTime - startTime;
+
+  server.stop(true);
+
+  if (suppressConsole) {
+    process.stdout.write = originalStdoutWrite;
+  }
+
+  cleanupLogRegistry();
+  await new Promise((resolve) => setTimeout(resolve, 500));
+
+  const avgLatency = result.latencies.length > 0
+    ? result.latencies.reduce((a, b) => a + b, 0) / result.latencies.length
+    : 0;
+
+  return {
+    name,
+    totalRequests: result.totalRequests,
+    duration,
+    requestsPerSecond: (result.totalRequests / duration) * 1000,
+    avgLatency,
+    minLatency: result.latencies.length > 0 ? Math.min(...result.latencies) : 0,
+    maxLatency: result.latencies.length > 0 ? Math.max(...result.latencies) : 0,
+  };
 }
 
-// Test 6: pino-api-logger with minimal buffer values (toConsole: false)
-// Minimal: flushInterval: 20ms, maxBufferLines: 1, maxBufferKilobytes: 1
-function createLoggerMinimalBufferServer(): Hono {
-  const logger = createLogger({
-    logDir: `${BENCHMARK_LOG_DIR}-6`,
-    console: { enabled: false },
-    archive: { runOnCreation: false },
-    file: {
-      flushInterval: 20, // Minimum allowed (20ms)
-      maxBufferLines: 1, // Minimum - flush after every line
-      maxBufferKilobytes: 1, // Minimum - 1KB buffer
-    },
+// ============================================================================
+// Multi-Core Benchmark (Cluster-based Implementation)
+// ============================================================================
+
+async function runMultiCoreBenchmark(
+  name: string,
+  loggerType: string,
+  suppressConsole = false
+): Promise<BenchmarkResult> {
+  const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+  if (suppressConsole) {
+    process.stdout.write = () => true;
+  }
+
+  const logger = loggerFactories[loggerType]?.();
+  const app = createServer(logger);
+
+  // Start server on fixed port
+  const server = Bun.serve({
+    port: BENCHMARK_PORT,
+    fetch: app.fetch,
+    reusePort: true,
   });
-  return createServer(logger);
+
+  const baseUrl = `http://localhost:${BENCHMARK_PORT}/api/test`;
+  const startTime = performance.now();
+
+  // Fork workers and collect results
+  const workerResults: WorkerResult[] = [];
+  const workerPromises: Promise<void>[] = [];
+
+  for (let i = 0; i < CPU_COUNT; i++) {
+    const worker = cluster.fork();
+
+    const promise = new Promise<void>((resolve) => {
+      worker.on("message", (msg: WorkerMessage) => {
+        if (msg.type === "ready") {
+          // Worker is ready, send start config
+          worker.send({
+            type: "start",
+            config: {
+              url: baseUrl,
+              durationMs: BENCHMARK_DURATION_MS,
+              concurrency: CONCURRENCY_PER_CORE,
+            },
+          } as WorkerMessage);
+        } else if (msg.type === "result" && msg.result) {
+          workerResults.push(msg.result);
+          worker.disconnect();
+          resolve();
+        }
+      });
+    });
+
+    workerPromises.push(promise);
+  }
+
+  // Wait for all workers to complete
+  await Promise.all(workerPromises);
+
+  const endTime = performance.now();
+  const duration = endTime - startTime;
+
+  server.stop(true);
+
+  if (suppressConsole) {
+    process.stdout.write = originalStdoutWrite;
+  }
+
+  cleanupLogRegistry();
+  await new Promise((resolve) => setTimeout(resolve, 500));
+
+  // Aggregate results from all workers
+  const allLatencies: number[] = [];
+  let totalRequests = 0;
+
+  for (const result of workerResults) {
+    allLatencies.push(...result.latencies);
+    totalRequests += result.totalRequests;
+  }
+
+  const avgLatency = allLatencies.length > 0
+    ? allLatencies.reduce((a, b) => a + b, 0) / allLatencies.length
+    : 0;
+
+  return {
+    name,
+    totalRequests,
+    duration,
+    requestsPerSecond: (totalRequests / duration) * 1000,
+    avgLatency,
+    minLatency: allLatencies.length > 0 ? Math.min(...allLatencies) : 0,
+    maxLatency: allLatencies.length > 0 ? Math.max(...allLatencies) : 0,
+  };
 }
 
-// Test 7: pino-api-logger with toConsole: true (with stdout pretty printing)
-function createLoggerWithConsoleServer(): Hono {
-  const logger = createLogger({
-    logDir: `${BENCHMARK_LOG_DIR}-7`,
-    console: { enabled: true },
-    archive: { runOnCreation: false },
-  });
-  return createServer(logger);
-}
+// ============================================================================
+// Formatting Functions
+// ============================================================================
 
 function formatResult(result: BenchmarkResult): string {
-  const w = 50; // inner width
+  const w = 50;
   const row = (label: string, value: string, unit = "") => {
     const content = `${label}${value}${unit}`;
     return `│ ${content.padEnd(w)} │`;
@@ -263,10 +369,9 @@ ${row("Max Latency:     ", result.maxLatency.toFixed(2).padStart(12), " ms")}
 
 function formatComparison(results: BenchmarkResult[]): string {
   const baseline = results[0].requestsPerSecond;
-  const c1 = 40; // Test name column
-  const c2 = 12; // Req/sec column
-  const c3 = 14; // vs Baseline column
-  // Inner width: (c1+2) + (c2+2) + (c3+2) + 2 separators
+  const c1 = 40;
+  const c2 = 12;
+  const c3 = 14;
   const innerWidth = c1 + c2 + c3 + 8;
 
   const hLine = (l: string, r: string, sep: string) =>
@@ -296,42 +401,81 @@ ${hLine("╚", "╝", "╩")}`;
   return output;
 }
 
-async function main() {
+// ============================================================================
+// Worker Process Entry Point
+// ============================================================================
+
+async function workerMain() {
+  // Signal ready to primary
+  process.send?.({ type: "ready" } as WorkerMessage);
+
+  // Wait for start command
+  process.on("message", async (msg: WorkerMessage) => {
+    if (msg.type === "start" && msg.config) {
+      const { url, durationMs, concurrency } = msg.config;
+      const result = await runBenchmarkClient(url, durationMs, concurrency);
+      process.send?.({ type: "result", result } as WorkerMessage);
+    }
+  });
+}
+
+// ============================================================================
+// Primary Process Entry Point
+// ============================================================================
+
+async function primaryMain() {
   await cleanupBenchmarkDir();
   await createBenchmarkLogDir();
 
+  const mode = MULTI_CORE_MODE ? "multi-core" : "single-core";
+
   console.log("\n🚀 Starting Pino API Logger Benchmark\n");
+  console.log(`Mode: ${mode}${MULTI_CORE_MODE ? ` (${CPU_COUNT} CPU cores)` : ""}`);
   console.log(`Duration per test: ${BENCHMARK_DURATION_MS / 1000}s`);
-  console.log(`Concurrent workers: ${CONCURRENT_REQUESTS}`);
+  console.log(`Concurrency per core: ${CONCURRENCY_PER_CORE}${MULTI_CORE_MODE ? ` (${CONCURRENCY_PER_CORE * CPU_COUNT} total)` : ""}`);
   if (!INCLUDE_CONSOLE_TEST) {
     console.log(`\n💡 Tip: Run with --with-console to include toConsole: true test`);
   }
+  if (!MULTI_CORE_MODE) {
+    console.log(`💡 Tip: Run with --multi-core to utilize all ${CPU_COUNT} CPU cores`);
+  }
   console.log("");
 
-  // Initialize results file with header
+  const totalConcurrency = MULTI_CORE_MODE ? CONCURRENCY_PER_CORE * CPU_COUNT : CONCURRENCY_PER_CORE;
   const header = `Pino API Logger Benchmark Results
 Generated: ${new Date().toISOString()}
+Mode: ${mode}${MULTI_CORE_MODE ? ` (${CPU_COUNT} CPU cores)` : ""}
 Duration per test: ${BENCHMARK_DURATION_MS / 1000}s
-Concurrent workers: ${CONCURRENT_REQUESTS}
+Concurrency per core: ${CONCURRENCY_PER_CORE}${MULTI_CORE_MODE ? ` (${totalConcurrency} total)` : ""}
 ${"═".repeat(79)}
 `;
   await fs.writeFile(BENCHMARK_RESULTS_FILE, header);
 
   const results: BenchmarkResult[] = [];
 
-  // Run tests sequentially
-  const tests: Array<{ name: string; setup: () => Hono; suppressConsole: boolean; warn: boolean }> = [
-    { name: "1. No Logger (Baseline)", setup: createBaselineServer, suppressConsole: false, warn: false },
-    { name: "2. Pino (silent - no output)", setup: createPinoSilentServer, suppressConsole: false, warn: false },
-    { name: "3. Pino (file destination - sync false)", setup: createPinoFileServer, suppressConsole: false, warn: false },
-    { name: "4. pino-api-logger (default buffer)", setup: createLoggerDefaultBufferServer, suppressConsole: false, warn: false },
-    { name: "5. pino-api-logger (high buffer)", setup: createLoggerHighBufferServer, suppressConsole: false, warn: false },
-    { name: "6. pino-api-logger (min buffer)", setup: createLoggerMinimalBufferServer, suppressConsole: false, warn: false },
-  ];
+  const runBenchmark = MULTI_CORE_MODE ? runMultiCoreBenchmark : runSingleCoreBenchmark;
 
-  // Only include toConsole test if explicitly requested (it floods the terminal)
+  const tests: Array<{
+    name: string;
+    loggerType: string;
+    suppressConsole: boolean;
+    warn: boolean;
+  }> = [
+      { name: "1. No Logger (Baseline)", loggerType: "baseline", suppressConsole: false, warn: false },
+      { name: "2. Pino (silent - no output)", loggerType: "pino-silent", suppressConsole: false, warn: false },
+      { name: "3. Pino (file destination - sync false)", loggerType: "pino-file", suppressConsole: false, warn: false },
+      { name: "4. pino-api-logger (default buffer)", loggerType: "api-logger-default", suppressConsole: false, warn: false },
+      { name: "5. pino-api-logger (high buffer)", loggerType: "api-logger-high-buffer", suppressConsole: false, warn: false },
+      { name: "6. pino-api-logger (min buffer)", loggerType: "api-logger-min-buffer", suppressConsole: false, warn: false },
+    ];
+
   if (INCLUDE_CONSOLE_TEST) {
-    tests.push({ name: "7. pino-api-logger (console)", setup: createLoggerWithConsoleServer, suppressConsole: false, warn: true });
+    tests.push({
+      name: "7. pino-api-logger (console)",
+      loggerType: "api-logger-console",
+      suppressConsole: false,
+      warn: true,
+    });
   }
 
   for (const test of tests) {
@@ -339,29 +483,32 @@ ${"═".repeat(79)}
       console.log("\n⚠️  Note: The following test outputs logs to console (may flood terminal)");
     }
     console.log(`\n⏱️  Running: ${test.name}...`);
-    const result = await runBenchmark(test.name, test.setup, test.suppressConsole);
+    const result = await runBenchmark(test.name, test.loggerType, test.suppressConsole);
     results.push(result);
 
     const formattedResult = formatResult(result);
     console.log(formattedResult);
 
-    // Append result to file
     await fs.appendFile(BENCHMARK_RESULTS_FILE, `${formattedResult}\n`);
   }
 
-  // Print separator before final comparison
   console.log(`\n${"═".repeat(79)}`);
 
-  // Print and write comparison
   const comparison = formatComparison(results);
   console.log(comparison);
 
-  // Append comparison to file
   await fs.appendFile(BENCHMARK_RESULTS_FILE, `\n${"═".repeat(79)}\n${comparison}\n`);
 
   console.log("\n✅ Benchmark complete!");
   console.log(`📄 Results saved to: ${BENCHMARK_RESULTS_FILE}\n`);
 }
 
-main().catch(console.error);
+// ============================================================================
+// Entry Point
+// ============================================================================
 
+if (cluster.isPrimary) {
+  primaryMain().catch(console.error);
+} else {
+  workerMain().catch(console.error);
+}

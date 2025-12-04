@@ -20,6 +20,7 @@
     "build:types": "tsc --emitDeclarationOnly --project tsconfig.json",
     "test": "bun run build && bun test",
     "benchmark": "bun run build && bun run tests/benchmark.ts",
+    "benchmark:multi-core": "bun run build && bun run tests/benchmark.ts --multi-core",
     "benchmark:with-console": "bun run build && bun run tests/benchmark.ts --with-console",
     "clean": "rimraf dist logs-test logs-benchmark",
     "size": "gzip-size dist/**/*.js",
