@@ -2,47 +2,59 @@ import cluster from "node:cluster";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import autocannon from "autocannon";
 import { Hono } from "hono";
 import pino from "pino";
 import { cleanupLogRegistry, createLogger } from "../src/index";
 import type { PinoLoggerExtended } from "../src/types";
 
-const BENCHMARK_DURATION_MS = 5000; // 5 seconds per test
-const CONCURRENCY_PER_CORE = 1000; // concurrent requests per CPU core
+// ============================================================================
+// Configuration
+// ============================================================================
+
+const BENCHMARK_DURATION_SEC = 10; // seconds per test
+const WARMUP_DURATION_SEC = 3; // seconds for warm-up
+const BENCHMARK_CONNECTIONS = 500; // concurrent connections
+const BENCHMARK_PIPELINING = 20; // requests per connection
+const BENCHMARK_WORKERS = 4; // autocannon worker threads (experimental)
 const BENCHMARK_LOG_DIR_BASE = "./logs/benchmark/";
 const BENCHMARK_LOG_DIR = `${BENCHMARK_LOG_DIR_BASE}test`;
 const BENCHMARK_RESULTS_FILE = `${BENCHMARK_LOG_DIR_BASE}results.txt`;
-const BENCHMARK_PORT = 54321; // Fixed port for cluster communication
-const WITH_MIN_MAX_LATENCY = true;
+const BENCHMARK_PORT = 54322;
 
 // Parse command line flags
 const INCLUDE_CONSOLE_TEST = process.argv.includes("--with-console");
 const MULTI_CORE_MODE = process.argv.includes("--multi-core");
 const CPU_COUNT = os.cpus().length;
 
+// ============================================================================
+// Types
+// ============================================================================
+
 interface BenchmarkResult {
   name: string;
-  totalRequests: number;
+  requests: number;
   duration: number;
   requestsPerSecond: number;
-  avgLatency: number;
-  minLatency: number;
-  maxLatency: number;
+  latencyAvg: number;
+  latencyP50: number;
+  latencyP99: number;
+  throughputMBps: number;
+  errors: number;
 }
 
-interface WorkerResult {
-  latencies: number[];
-  totalRequests: number;
+interface TestConfig {
+  name: string;
+  loggerType: string;
+  suppressConsole: boolean;
+  warn: boolean;
+  isWarmup?: boolean;
+  duration?: number;
 }
 
-interface WorkerMessage {
-  type: "start" | "result" | "ready";
-  config?: {
-    url: string;
-    durationMs: number;
-    concurrency: number;
-  };
-  result?: WorkerResult;
+interface ClusterMessage {
+  type: "ready" | "start" | "stop" | "stopped";
+  loggerType?: string;
 }
 
 // ============================================================================
@@ -81,10 +93,10 @@ function generateRandomPayload(length: number): string {
 }
 
 // ============================================================================
-// Server Creation Functions
+// Server Creation
 // ============================================================================
 
-function createServer(logger?: pino.Logger | PinoLoggerExtended) {
+function createHonoApp(logger?: pino.Logger | PinoLoggerExtended) {
   const app = new Hono();
   if (logger) {
     app.use(async (c, next) => {
@@ -115,22 +127,22 @@ const loggerFactories: Record<string, LoggerFactory> = {
   baseline: () => undefined,
   "pino-silent": () => pino({ level: "silent" }),
   "pino-file": () => {
-    const logFile = path.join(`${BENCHMARK_LOG_DIR}-3`, "pino-raw.log");
+    const logFile = path.join(`${BENCHMARK_LOG_DIR}-pino`, "pino-raw.log");
     try {
-      require("node:fs").mkdirSync(`${BENCHMARK_LOG_DIR}-3`, { recursive: true });
+      require("node:fs").mkdirSync(`${BENCHMARK_LOG_DIR}-pino`, { recursive: true });
     } catch { }
     const dest = pino.destination({ dest: logFile, sync: false });
     return pino({ level: "info" }, dest);
   },
   "api-logger-default": () =>
     createLogger({
-      logDir: `${BENCHMARK_LOG_DIR}-4`,
+      logDir: `${BENCHMARK_LOG_DIR}-default`,
       console: { enabled: false },
       archive: { runOnCreation: false },
     }),
   "api-logger-high-buffer": () =>
     createLogger({
-      logDir: `${BENCHMARK_LOG_DIR}-5`,
+      logDir: `${BENCHMARK_LOG_DIR}-high`,
       console: { enabled: false },
       archive: { runOnCreation: false },
       file: {
@@ -141,7 +153,7 @@ const loggerFactories: Record<string, LoggerFactory> = {
     }),
   "api-logger-min-buffer": () =>
     createLogger({
-      logDir: `${BENCHMARK_LOG_DIR}-6`,
+      logDir: `${BENCHMARK_LOG_DIR}-min`,
       console: { enabled: false },
       archive: { runOnCreation: false },
       file: {
@@ -152,194 +164,211 @@ const loggerFactories: Record<string, LoggerFactory> = {
     }),
   "api-logger-console": () =>
     createLogger({
-      logDir: `${BENCHMARK_LOG_DIR}-7`,
+      logDir: `${BENCHMARK_LOG_DIR}-console`,
       console: { enabled: true },
       archive: { runOnCreation: false },
     }),
 };
 
 // ============================================================================
-// Benchmark Client (runs in worker processes)
+// Single-Core Server
 // ============================================================================
 
-async function runBenchmarkClient(url: string, durationMs: number, concurrency: number): Promise<WorkerResult> {
-  const latencies: number[] = [];
-  let totalRequests = 0;
-  let running = true;
+let currentServer: ReturnType<typeof Bun.serve> | null = null;
 
-  const timeout = setTimeout(() => {
-    running = false;
-  }, durationMs);
-
-  const workers = Array.from({ length: concurrency }, async () => {
-    while (running) {
-      const reqStart = performance.now();
-      try {
-        const response = await fetch(url);
-        if (response.ok) {
-          await response.text();
-          const latency = performance.now() - reqStart;
-          latencies.push(latency);
-          totalRequests++;
-        }
-      } catch {
-        // Ignore errors during shutdown
-      }
-    }
-  });
-
-  await Promise.all(workers);
-  clearTimeout(timeout);
-
-  return { latencies, totalRequests };
-}
-
-// ============================================================================
-// Single-Core Benchmark (Original Implementation)
-// ============================================================================
-
-async function runSingleCoreBenchmark(
-  name: string,
-  loggerType: string,
-  suppressConsole = false
-): Promise<BenchmarkResult> {
-  const originalStdoutWrite = process.stdout.write.bind(process.stdout);
-  if (suppressConsole) {
-    process.stdout.write = () => true;
-  }
-
+function startSingleCoreServer(loggerType: string): void {
   const logger = loggerFactories[loggerType]?.();
-  const app = createServer(logger);
-  const server = Bun.serve({
-    port: 0,
-    fetch: app.fetch,
-  });
-
-  const baseUrl = `http://localhost:${server.port}/api/test`;
-  const startTime = performance.now();
-
-  const result = await runBenchmarkClient(baseUrl, BENCHMARK_DURATION_MS, CONCURRENCY_PER_CORE);
-
-  const endTime = performance.now();
-  const duration = endTime - startTime;
-
-  server.stop(true);
-
-  if (suppressConsole) {
-    process.stdout.write = originalStdoutWrite;
-  }
-
-  cleanupLogRegistry();
-  await new Promise((resolve) => setTimeout(resolve, 500));
-
-  const avgLatency = result.latencies.length > 0
-    ? result.latencies.reduce((a, b) => a + b, 0) / result.latencies.length
-    : 0;
-
-  return {
-    name,
-    totalRequests: result.totalRequests,
-    duration,
-    requestsPerSecond: (result.totalRequests / duration) * 1000,
-    avgLatency,
-    minLatency: WITH_MIN_MAX_LATENCY ? (result.latencies.length > 0 ? Math.min(...result.latencies) : 0) : 0,
-    maxLatency: WITH_MIN_MAX_LATENCY ? (result.latencies.length > 0 ? Math.max(...result.latencies) : 0) : 0,
-  };
-}
-
-// ============================================================================
-// Multi-Core Benchmark (Cluster-based Implementation)
-// ============================================================================
-
-async function runMultiCoreBenchmark(
-  name: string,
-  loggerType: string,
-  suppressConsole = false
-): Promise<BenchmarkResult> {
-  const originalStdoutWrite = process.stdout.write.bind(process.stdout);
-  if (suppressConsole) {
-    process.stdout.write = () => true;
-  }
-
-  const logger = loggerFactories[loggerType]?.();
-  const app = createServer(logger);
-
-  // Start server on fixed port
-  const server = Bun.serve({
+  const app = createHonoApp(logger);
+  currentServer = Bun.serve({
     port: BENCHMARK_PORT,
     fetch: app.fetch,
     reusePort: true,
   });
+}
 
-  const baseUrl = `http://localhost:${BENCHMARK_PORT}/api/test`;
-  const startTime = performance.now();
+function stopSingleCoreServer(): void {
+  if (currentServer) {
+    currentServer.stop(true);
+    currentServer = null;
+  }
+  cleanupLogRegistry();
+}
 
-  // Fork workers and collect results
-  const workerResults: WorkerResult[] = [];
-  const workerPromises: Promise<void>[] = [];
+// ============================================================================
+// Multi-Core Server (Worker Process)
+// ============================================================================
 
+function runWorkerServer(): void {
+  let server: ReturnType<typeof Bun.serve> | null = null;
+
+  process.on("message", (msg: ClusterMessage) => {
+    if (msg.type === "start" && msg.loggerType) {
+      const logger = loggerFactories[msg.loggerType]?.();
+      const app = createHonoApp(logger);
+      server = Bun.serve({
+        port: BENCHMARK_PORT,
+        fetch: app.fetch,
+        reusePort: true,
+      });
+      process.send?.({ type: "ready" } as ClusterMessage);
+    } else if (msg.type === "stop") {
+      if (server) {
+        server.stop(true);
+        server = null;
+      }
+      cleanupLogRegistry();
+      process.send?.({ type: "stopped" } as ClusterMessage);
+    }
+  });
+
+  // Signal that worker is initialized
+  process.send?.({ type: "ready" } as ClusterMessage);
+}
+
+// ============================================================================
+// Multi-Core Server Management (Primary Process)
+// ============================================================================
+
+let workers: ReturnType<typeof cluster.fork>[] = [];
+
+async function startMultiCoreServer(loggerType: string): Promise<void> {
+  workers = [];
+
+  // Fork workers for each CPU
   for (let i = 0; i < CPU_COUNT; i++) {
     const worker = cluster.fork();
-
-    const promise = new Promise<void>((resolve) => {
-      worker.on("message", (msg: WorkerMessage) => {
-        if (msg.type === "ready") {
-          // Worker is ready, send start config
-          worker.send({
-            type: "start",
-            config: {
-              url: baseUrl,
-              durationMs: BENCHMARK_DURATION_MS,
-              concurrency: CONCURRENCY_PER_CORE,
-            },
-          } as WorkerMessage);
-        } else if (msg.type === "result" && msg.result) {
-          workerResults.push(msg.result);
-          worker.disconnect();
-          resolve();
-        }
-      });
-    });
-
-    workerPromises.push(promise);
+    workers.push(worker);
   }
 
-  // Wait for all workers to complete
-  await Promise.all(workerPromises);
+  // Wait for all workers to be ready, then tell them to start
+  const readyPromises = workers.map(
+    (worker) =>
+      new Promise<void>((resolve) => {
+        const handler = (msg: ClusterMessage) => {
+          if (msg.type === "ready") {
+            worker.off("message", handler);
+            resolve();
+          }
+        };
+        worker.on("message", handler);
+      })
+  );
 
-  const endTime = performance.now();
-  const duration = endTime - startTime;
+  await Promise.all(readyPromises);
 
-  server.stop(true);
+  // Send start command to all workers
+  const startPromises = workers.map(
+    (worker) =>
+      new Promise<void>((resolve) => {
+        const handler = (msg: ClusterMessage) => {
+          if (msg.type === "ready") {
+            worker.off("message", handler);
+            resolve();
+          }
+        };
+        worker.on("message", handler);
+        worker.send({ type: "start", loggerType } as ClusterMessage);
+      })
+  );
+
+  await Promise.all(startPromises);
+}
+
+async function stopMultiCoreServer(): Promise<void> {
+  // Send stop command to all workers
+  const stopPromises = workers.map(
+    (worker) =>
+      new Promise<void>((resolve) => {
+        const handler = (msg: ClusterMessage) => {
+          if (msg.type === "stopped") {
+            worker.off("message", handler);
+            resolve();
+          }
+        };
+        worker.on("message", handler);
+        worker.send({ type: "stop" } as ClusterMessage);
+      })
+  );
+
+  await Promise.all(stopPromises);
+
+  // Disconnect all workers
+  for (const worker of workers) {
+    worker.disconnect();
+  }
+
+  workers = [];
+}
+
+// ============================================================================
+// Autocannon Benchmark Runner
+// ============================================================================
+
+async function runAutocannonBenchmark(
+  name: string,
+  loggerType: string,
+  suppressConsole = false,
+  duration = BENCHMARK_DURATION_SEC
+): Promise<BenchmarkResult> {
+  const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+  if (suppressConsole) {
+    process.stdout.write = () => true;
+  }
+
+  // Start server(s)
+  if (MULTI_CORE_MODE) {
+    await startMultiCoreServer(loggerType);
+  } else {
+    startSingleCoreServer(loggerType);
+  }
+
+  // Give server time to stabilize
+  await new Promise((resolve) => setTimeout(resolve, 500));
+
+  // Run autocannon
+  const result = await new Promise<autocannon.Result>((resolve, reject) => {
+    const instance = autocannon(
+      {
+        url: `http://localhost:${BENCHMARK_PORT}/api/test`,
+        connections: BENCHMARK_CONNECTIONS,
+        pipelining: BENCHMARK_PIPELINING,
+        duration,
+        workers: BENCHMARK_WORKERS,
+      },
+      (err, result) => {
+        if (err) reject(err);
+        else resolve(result);
+      }
+    );
+
+    // Don't render the progress bar
+    autocannon.track(instance, { renderProgressBar: false });
+  });
+
+  // Stop server(s)
+  if (MULTI_CORE_MODE) {
+    await stopMultiCoreServer();
+  } else {
+    stopSingleCoreServer();
+  }
 
   if (suppressConsole) {
     process.stdout.write = originalStdoutWrite;
   }
 
-  cleanupLogRegistry();
+  // Wait for cleanup
   await new Promise((resolve) => setTimeout(resolve, 500));
-
-  // Aggregate results from all workers
-  const allLatencies: number[] = [];
-  let totalRequests = 0;
-
-  for (const result of workerResults) {
-    allLatencies.push(...result.latencies);
-    totalRequests += result.totalRequests;
-  }
-
-  const avgLatency = allLatencies.length > 0
-    ? allLatencies.reduce((a, b) => a + b, 0) / allLatencies.length
-    : 0;
 
   return {
     name,
-    totalRequests,
-    duration,
-    requestsPerSecond: (totalRequests / duration) * 1000,
-    avgLatency,
-    minLatency: WITH_MIN_MAX_LATENCY ? (allLatencies.length > 0 ? Math.min(...allLatencies) : 0) : 0,
-    maxLatency: WITH_MIN_MAX_LATENCY ? (allLatencies.length > 0 ? Math.max(...allLatencies) : 0) : 0,
+    requests: result.requests.total,
+    duration: result.duration,
+    requestsPerSecond: result.requests.average,
+    latencyAvg: result.latency.average,
+    latencyP50: result.latency.p50,
+    latencyP99: result.latency.p99,
+    throughputMBps: result.throughput.average / 1024 / 1024,
+    errors: result.errors,
   };
 }
 
@@ -348,7 +377,7 @@ async function runMultiCoreBenchmark(
 // ============================================================================
 
 function formatResult(result: BenchmarkResult): string {
-  const w = 50;
+  const w = 54;
   const row = (label: string, value: string, unit = "") => {
     const content = `${label}${value}${unit}`;
     return `│ ${content.padEnd(w)} │`;
@@ -359,19 +388,21 @@ function formatResult(result: BenchmarkResult): string {
 ┌${line}┐
 │ ${result.name.padEnd(w)} │
 ├${line}┤
-${row("Total Requests:  ", result.totalRequests.toString().padStart(12))}
-${row("Duration:        ", (result.duration / 1000).toFixed(2).padStart(12), " s")}
-${row("Requests/sec:    ", result.requestsPerSecond.toFixed(2).padStart(12))}
-${row("Avg Latency:     ", result.avgLatency.toFixed(2).padStart(12), " ms")}
-${row("Min Latency:     ", result.minLatency.toFixed(2).padStart(12), " ms")}
-${row("Max Latency:     ", result.maxLatency.toFixed(2).padStart(12), " ms")}
+${row("Total Requests:  ", result.requests.toLocaleString().padStart(16))}
+${row("Duration:        ", result.duration.toFixed(2).padStart(16), " s")}
+${row("Requests/sec:    ", result.requestsPerSecond.toFixed(2).padStart(16))}
+${row("Latency (avg):   ", result.latencyAvg.toFixed(2).padStart(16), " ms")}
+${row("Latency (p50):   ", result.latencyP50.toFixed(2).padStart(16), " ms")}
+${row("Latency (p99):   ", result.latencyP99.toFixed(2).padStart(16), " ms")}
+${row("Throughput:      ", result.throughputMBps.toFixed(2).padStart(16), " MB/s")}
+${row("Errors:          ", result.errors.toString().padStart(16))}
 └${line}┘`;
 }
 
 function formatComparison(results: BenchmarkResult[]): string {
   const baseline = results[0].requestsPerSecond;
   const c1 = 40;
-  const c2 = 12;
+  const c2 = 14;
   const c3 = 14;
   const innerWidth = c1 + c2 + c3 + 8;
 
@@ -393,7 +424,7 @@ ${hLine("╠", "╣", "╬")}`;
     const diff = ((result.requestsPerSecond / baseline) * 100 - 100).toFixed(1);
     const diffStr = result === results[0] ? "baseline" : `${diff}%`;
     output += `
-║ ${result.name.padEnd(c1)} ║ ${result.requestsPerSecond.toFixed(0).padStart(c2)} ║ ${diffStr.padStart(c3)} ║`;
+║ ${result.name.padEnd(c1)} ║ ${result.requestsPerSecond.toFixed(0).padStart(c2)} ║ ${diffStr.padStart(c2)} ║`;
   }
 
   output += `
@@ -403,25 +434,7 @@ ${hLine("╚", "╝", "╩")}`;
 }
 
 // ============================================================================
-// Worker Process Entry Point
-// ============================================================================
-
-async function workerMain() {
-  // Signal ready to primary
-  process.send?.({ type: "ready" } as WorkerMessage);
-
-  // Wait for start command
-  process.on("message", async (msg: WorkerMessage) => {
-    if (msg.type === "start" && msg.config) {
-      const { url, durationMs, concurrency } = msg.config;
-      const result = await runBenchmarkClient(url, durationMs, concurrency);
-      process.send?.({ type: "result", result } as WorkerMessage);
-    }
-  });
-}
-
-// ============================================================================
-// Primary Process Entry Point
+// Primary Process Main
 // ============================================================================
 
 async function primaryMain() {
@@ -430,45 +443,44 @@ async function primaryMain() {
 
   const mode = MULTI_CORE_MODE ? "multi-core" : "single-core";
 
-  console.log("\n🚀 Starting Pino API Logger Benchmark\n");
-  console.log(`Mode: ${mode}${MULTI_CORE_MODE ? ` (${CPU_COUNT} CPU cores)` : ""}`);
-  console.log(`Duration per test: ${BENCHMARK_DURATION_MS / 1000}s`);
-  console.log(`Concurrency per core: ${CONCURRENCY_PER_CORE}${MULTI_CORE_MODE ? ` (${CONCURRENCY_PER_CORE * CPU_COUNT} total)` : ""}`);
+  console.log("\n🚀 Starting Pino API Logger Benchmark (Autocannon)\n");
+  console.log(`Mode: ${mode}${MULTI_CORE_MODE ? ` (${CPU_COUNT} server workers)` : ""}`);
+  console.log(`Duration per test: ${BENCHMARK_DURATION_SEC}s`);
+  console.log(`Connections: ${BENCHMARK_CONNECTIONS}`);
+  console.log(`Pipelining: ${BENCHMARK_PIPELINING}`);
+  console.log(`Client workers: ${BENCHMARK_WORKERS}`);
   if (!INCLUDE_CONSOLE_TEST) {
     console.log(`\n💡 Tip: Run with --with-console to include toConsole: true test`);
   }
   if (!MULTI_CORE_MODE) {
-    console.log(`💡 Tip: Run with --multi-core to utilize all ${CPU_COUNT} CPU cores`);
+    console.log(`💡 Tip: Run with --multi-core to run server on all ${CPU_COUNT} CPU cores`);
   }
   console.log("");
 
-  const totalConcurrency = MULTI_CORE_MODE ? CONCURRENCY_PER_CORE * CPU_COUNT : CONCURRENCY_PER_CORE;
-  const header = `Pino API Logger Benchmark Results
+  const header = `Pino API Logger Benchmark Results (Autocannon)
 Generated: ${new Date().toISOString()}
-Mode: ${mode}${MULTI_CORE_MODE ? ` (${CPU_COUNT} CPU cores)` : ""}
-Duration per test: ${BENCHMARK_DURATION_MS / 1000}s
-Concurrency per core: ${CONCURRENCY_PER_CORE}${MULTI_CORE_MODE ? ` (${totalConcurrency} total)` : ""}
+Mode: ${mode}${MULTI_CORE_MODE ? ` (${CPU_COUNT} server workers)` : ""}
+Duration per test: ${BENCHMARK_DURATION_SEC}s
+Connections: ${BENCHMARK_CONNECTIONS}
+Pipelining: ${BENCHMARK_PIPELINING}
+Client workers: ${BENCHMARK_WORKERS}
 ${"═".repeat(79)}
 `;
   await fs.writeFile(BENCHMARK_RESULTS_FILE, header);
 
   const results: BenchmarkResult[] = [];
 
-  const runBenchmark = MULTI_CORE_MODE ? runMultiCoreBenchmark : runSingleCoreBenchmark;
-
-  const tests: Array<{
-    name: string;
-    loggerType: string;
-    suppressConsole: boolean;
-    warn: boolean;
-  }> = [
-      { name: "1. No Logger (Baseline)", loggerType: "baseline", suppressConsole: false, warn: false },
-      { name: "2. Pino (silent - no output)", loggerType: "pino-silent", suppressConsole: false, warn: false },
-      { name: "3. Pino (file destination - sync false)", loggerType: "pino-file", suppressConsole: false, warn: false },
-      { name: "4. pino-api-logger (default buffer)", loggerType: "api-logger-default", suppressConsole: false, warn: false },
-      { name: "5. pino-api-logger (high buffer)", loggerType: "api-logger-high-buffer", suppressConsole: false, warn: false },
-      { name: "6. pino-api-logger (min buffer)", loggerType: "api-logger-min-buffer", suppressConsole: false, warn: false },
-    ];
+  const tests: TestConfig[] = [
+    // Warm-up run (results discarded) - primes JIT, TCP stack, memory allocator
+    { name: "🔥 Warm-up", loggerType: "baseline", suppressConsole: false, warn: false, isWarmup: true, duration: WARMUP_DURATION_SEC },
+    // Actual tests
+    { name: "1. No Logger (Baseline)", loggerType: "baseline", suppressConsole: false, warn: false },
+    { name: "2. Pino (silent - no output)", loggerType: "pino-silent", suppressConsole: false, warn: false },
+    { name: "3. Pino (file destination)", loggerType: "pino-file", suppressConsole: false, warn: false },
+    { name: "4. pino-api-logger (default buffer)", loggerType: "api-logger-default", suppressConsole: false, warn: false },
+    { name: "5. pino-api-logger (high buffer)", loggerType: "api-logger-high-buffer", suppressConsole: false, warn: false },
+    { name: "6. pino-api-logger (min buffer)", loggerType: "api-logger-min-buffer", suppressConsole: false, warn: false },
+  ];
 
   if (INCLUDE_CONSOLE_TEST) {
     tests.push({
@@ -484,7 +496,19 @@ ${"═".repeat(79)}
       console.log("\n⚠️  Note: The following test outputs logs to console (may flood terminal)");
     }
     console.log(`\n⏱️  Running: ${test.name}...`);
-    const result = await runBenchmark(test.name, test.loggerType, test.suppressConsole);
+    const result = await runAutocannonBenchmark(
+      test.name,
+      test.loggerType,
+      test.suppressConsole,
+      test.duration ?? BENCHMARK_DURATION_SEC
+    );
+
+    // Skip storing/displaying results for warm-up runs
+    if (test.isWarmup) {
+      console.log("✅ Warm-up complete\n");
+      continue;
+    }
+
     results.push(result);
 
     const formattedResult = formatResult(result);
@@ -502,6 +526,8 @@ ${"═".repeat(79)}
 
   console.log("\n✅ Benchmark complete!");
   console.log(`📄 Results saved to: ${BENCHMARK_RESULTS_FILE}\n`);
+
+  process.exit(0);
 }
 
 // ============================================================================
@@ -509,7 +535,11 @@ ${"═".repeat(79)}
 // ============================================================================
 
 if (cluster.isPrimary) {
-  primaryMain().catch(console.error);
+  primaryMain().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
 } else {
-  workerMain().catch(console.error);
+  runWorkerServer();
 }
+

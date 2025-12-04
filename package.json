@@ -22,6 +22,7 @@
     "benchmark": "bun run build && bun run tests/benchmark.ts",
     "benchmark:multi-core": "bun run build && bun run tests/benchmark.ts --multi-core",
     "benchmark:with-console": "bun run build && bun run tests/benchmark.ts --with-console",
+    "benchmark:multi-core-console": "bun run build && bun run tests/benchmark.ts --multi-core --with-console",
     "clean": "rimraf dist logs-test logs-benchmark",
     "size": "gzip-size dist/**/*.js",
     "lint": "biome check src",
@@ -37,7 +38,9 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.3.8",
+    "@types/autocannon": "^7.12.7",
     "@types/bun": "latest",
+    "autocannon": "^8.0.0",
     "gzip-size-cli": "^5.1.0",
     "hono": "^4.10.7",
     "rimraf": "^6.1.2",
