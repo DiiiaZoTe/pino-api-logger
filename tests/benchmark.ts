@@ -338,8 +338,8 @@ async function runMultiCoreBenchmark(
     duration,
     requestsPerSecond: (totalRequests / duration) * 1000,
     avgLatency,
-    minLatency: allLatencies.length > 0 ? Math.min(...allLatencies) : 0,
-    maxLatency: allLatencies.length > 0 ? Math.max(...allLatencies) : 0,
+    minLatency: WITH_MIN_MAX_LATENCY ? (allLatencies.length > 0 ? Math.min(...allLatencies) : 0) : 0,
+    maxLatency: WITH_MIN_MAX_LATENCY ? (allLatencies.length > 0 ? Math.max(...allLatencies) : 0) : 0,
   };
 }
 
