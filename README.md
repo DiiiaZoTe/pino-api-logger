@@ -622,16 +622,23 @@ if (cluster.isPrimary) {
 }
 ```
 
+### Rotation Locking
+
+When rotation is triggered, the logger uses an atomic `mkdir`-based lock to coordinate between workers:
+
+1. **Lock acquisition** — First worker to rotate acquires a `.rotation-lock` directory
+2. **Other workers wait** — Workers needing to rotate poll until lock is released (max ~1s)
+3. **Coordinated switch** — After rotation, all workers converge on the same new file
+4. **Stale lock detection** — Locks older than 10s are considered stale (crashed process) and removed
+
+This ensures only one overflow file is created per rotation event, even under high concurrency.
+
 ### High-Load Considerations
 
-Under very high load with many workers, log files may slightly exceed `maxLogSizeMegabytes` before rotation occurs. This is expected behavior — the trade-off prioritizes throughput over strict size limits. Files typically stay within ~1.5x the configured limit.
+Under very high load, log files may slightly exceed `maxLogSizeMegabytes` before rotation occurs. This is expected behavior — files typically stay within ~1.2x the configured limit.
 
-Additionally, multiple workers may occasionally rotate simultaneously, resulting in multiple overflow files being created. While the logger mitigates this where possible, it is an inherent trade-off of coordinating writes to a single file across multiple processes without blocking. Performance is prioritized over strict rotation synchronization.
-
-**Tip:** When running in cluster mode, consider increasing `maxLogSizeMegabytes` (e.g., 200-500MB) to reduce rotation frequency. Fewer rotations means fewer opportunities for race conditions between workers.
-
-For workloads requiring stricter guarantees, consider:
-- Running with fewer workers
+For extremely high-throughput workloads, consider:
+- Increasing `maxLogSizeMegabytes` (e.g., 200-500MB) to reduce rotation frequency
 - Using a centralized logging service (e.g., Datadog, Elasticsearch, CloudWatch)
 - Implementing a dedicated log aggregation layer
 

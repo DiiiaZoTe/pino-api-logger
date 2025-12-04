@@ -6,6 +6,11 @@ import type { FileRotationFrequency, ResolvedFileConfig } from "./types";
 /** Options passed to FileWriter (includes logDir which is at root level) */
 export type FileWriterOptions = { logDir: string } & ResolvedFileConfig;
 
+/** Rotation lock settings */
+const ROTATION_LOCK_STALE_MS = 10000; // Consider lock stale after 10s (crashed process)
+const ROTATION_LOCK_RETRY_MS = 20; // Retry interval when waiting for lock
+const ROTATION_LOCK_MAX_RETRIES = 50; // Max retries (50 * 20ms = 1s max wait)
+
 export class FileWriter {
   private logDir: string;
   private rotationFrequency: FileRotationFrequency;
@@ -31,9 +36,66 @@ export class FileWriter {
   private isRotating = false; // Flag to redirect writes during rotation
   private pendingWrites: string[] = []; // Writes that arrived during rotation
 
+  /** Path to rotation lock directory (atomic mkdir-based lock) */
+  private get rotationLockPath(): string {
+    return path.join(this.logDir, ".rotation-lock");
+  }
+
   /** Estimated bytes in current file (for single-process rotation check) */
   private get currentFileSizeBytes(): number {
     return this.bytesWritten;
+  }
+
+  /**
+   * Try to acquire rotation lock using atomic mkdir.
+   * Returns true if lock acquired, false if another process holds it.
+   * Handles stale locks from crashed processes.
+   */
+  private tryAcquireRotationLock(): boolean {
+    try {
+      // Check for stale lock (crashed process)
+      try {
+        const stats = fs.statSync(this.rotationLockPath);
+        const lockAge = Date.now() - stats.mtimeMs;
+        if (lockAge > ROTATION_LOCK_STALE_MS) {
+          // Lock is stale, remove it
+          fs.rmdirSync(this.rotationLockPath);
+        }
+      } catch {
+        // Lock doesn't exist, that's fine
+      }
+
+      // Try to create lock directory (atomic operation)
+      fs.mkdirSync(this.rotationLockPath);
+      return true;
+    } catch {
+      // Lock already exists (another process is rotating)
+      return false;
+    }
+  }
+
+  /** Release rotation lock */
+  private releaseRotationLock(): void {
+    try {
+      fs.rmdirSync(this.rotationLockPath);
+    } catch {
+      // Lock might already be released or never acquired
+    }
+  }
+
+  /**
+   * Wait for rotation lock with retries.
+   * Returns true if lock acquired, false if timed out.
+   */
+  private async waitForRotationLock(): Promise<boolean> {
+    for (let i = 0; i < ROTATION_LOCK_MAX_RETRIES; i++) {
+      if (this.tryAcquireRotationLock()) {
+        return true;
+      }
+      // Wait before retry
+      await new Promise((resolve) => setTimeout(resolve, ROTATION_LOCK_RETRY_MS));
+    }
+    return false;
   }
 
   constructor(opts: FileWriterOptions) {
@@ -409,33 +471,55 @@ export class FileWriter {
   }
 
   /**
-   * Rotate to a new log file.
+   * Rotate to a new log file with cross-process coordination.
+   * Uses mkdir-based locking to ensure only one worker creates the new overflow file.
    * @param skipFlush - Skip flushing buffer (when file is already full from other workers)
    * @param dueToSize - Rotation is due to size limit (exclude current file from consideration)
    */
   private async rotateStream(skipFlush = false, dueToSize = false) {
-    // Flush current buffer before switching (unless skipFlush - when file is already full from other workers)
-    if (!skipFlush && this.buffer.length > 0) {
+    // Try to acquire rotation lock
+    const gotLock = await this.waitForRotationLock();
+
+    if (gotLock) {
+      // We hold the lock - perform the actual rotation
       try {
-        await this.flushBuffer();
-      } catch (err) {
-        // Swallow error to ensure we proceed with rotation (recovery)
-        console.error(`[${DEFAULT_PACKAGE_NAME}] Failed to flush buffer during rotation`, err);
+        // Flush current buffer before switching (unless skipFlush)
+        if (!skipFlush && this.buffer.length > 0) {
+          try {
+            await this.flushBuffer();
+          } catch (err) {
+            console.error(`[${DEFAULT_PACKAGE_NAME}] Failed to flush buffer during rotation`, err);
+          }
+        }
+
+        this.stream?.end();
+        this.currentPeriod = this.getPeriodString();
+
+        // Find/create new log file
+        const newPath = this.findAvailableLogPath(dueToSize);
+        this.openStream(newPath);
+      } finally {
+        // Always release lock
+        this.releaseRotationLock();
       }
+    } else {
+      // Another worker is rotating - just switch to whatever file they created
+      // Flush to current file first (it might still have space)
+      if (!skipFlush && this.buffer.length > 0) {
+        try {
+          await this.flushBuffer();
+        } catch {
+          // Ignore - file might be full
+        }
+      }
+
+      this.stream?.end();
+      this.currentPeriod = this.getPeriodString();
+
+      // Find the file the other worker created (or one with space)
+      const newPath = this.findAvailableLogPath(dueToSize);
+      this.openStream(newPath);
     }
-
-    this.stream?.end();
-
-    // Update to current period
-    this.currentPeriod = this.getPeriodString();
-
-    // Find available log path (reuses existing overflow with space, or creates new)
-    // When rotating due to size, skip main log check - we know it's full
-    // This coordinates between multiple workers writing to the same directory
-    const newPath = this.findAvailableLogPath(dueToSize);
-
-    // Use the helper that attaches the error listener
-    this.openStream(newPath);
   }
 
   /** Clean shutdown */
