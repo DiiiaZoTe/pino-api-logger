@@ -172,13 +172,13 @@ export class FileWriter {
     // First candidate: just timestamp
     yield path.join(this.logDir, `${baseName}.log`);
 
-    // Second candidate: with milliseconds
-    yield path.join(this.logDir, `${baseName}-${ms}.log`);
+    // Second candidate: with milliseconds (use ~ so it sorts after base)
+    yield path.join(this.logDir, `${baseName}~${ms}.log`);
 
     // Extremely rare: append numeric suffix until unique
     let counter = 1;
     while (true) {
-      yield path.join(this.logDir, `${baseName}-${ms}~${counter}.log`);
+      yield path.join(this.logDir, `${baseName}~${ms}~${counter}.log`);
       counter++;
     }
   }

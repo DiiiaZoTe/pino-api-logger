@@ -324,9 +324,10 @@ Get or create a file writer for a specific log directory. Uses singleton pattern
 
 ```
 logs/
-├── 2025-01-01.log           # Daily log file
-├── 2025-01-01~15-59-59.log  # Overflow file (when max size exceeded)
-├── 2025-01-02.log           # Today's log file
+├── 2025-01-01.log              # Daily log file
+├── 2025-01-01~15-59-59.log     # Overflow file (when max size exceeded)
+├── 2025-01-01~15-59-59~123.log # Overflow with milliseconds (rare, high-throughput)
+├── 2025-01-02.log              # Today's log file
 └── archives/
     ├── 2024-12-archive.tar.gz    # Monthly archive
     └── 2024-11-archive.tar.gz
@@ -336,13 +337,26 @@ logs/
 
 ```
 logs/
-├── 2025-01-01~00.log        # Hourly log file (midnight hour)
-├── 2025-01-01~01.log        # Hourly log file (1 AM hour)
-├── 2025-01-01~15-30-00.log  # Overflow file (when max size exceeded)
+├── 2025-01-01~00.log           # Hourly log file (midnight hour)
+├── 2025-01-01~01.log           # Hourly log file (1 AM hour)
+├── 2025-01-01~15-30-00.log     # Overflow file (when max size exceeded)
+├── 2025-01-01~15-30-00~456.log # Overflow with milliseconds (rare)
 └── archives/
     ├── 2025-01-01-archive.tar.gz  # Daily archive (when archive.frequency: "daily")
     └── 2024-12-archive.tar.gz     # Monthly archive
 ```
+
+### Overflow File Naming
+
+When a log file exceeds `maxLogSizeMegabytes`, an overflow file is created:
+
+| Situation | Filename Pattern | Example |
+|-----------|------------------|---------|
+| Normal overflow | `YYYY-MM-DD~HH-mm-ss.log` | `2025-01-01~15-30-00.log` |
+| Same-second collision | `YYYY-MM-DD~HH-mm-ss~mmm.log` | `2025-01-01~15-30-00~456.log` |
+| Extremely rare collision | `YYYY-MM-DD~HH-mm-ss~mmm~N.log` | `2025-01-01~15-30-00~456~1.log` |
+
+The `~` delimiter ensures files sort chronologically (ASCII `~` > `.`).
 
 ### Archive Naming Convention
 
@@ -561,6 +575,62 @@ logs/
 ```
 
 Each subdirectory maintains its own archiving schedule and file rotation independently.
+
+## Multi-Worker / Cluster Usage
+
+When running in a clustered environment using `node:cluster` (or Bun's cluster support), this logger automatically detects worker processes and adjusts behavior accordingly.
+
+### Auto-Detection Behavior
+
+When `cluster.isWorker` is `true`:
+- **Archiving is auto-disabled** — Only the primary process runs archive cron jobs
+- **Retention is auto-disabled** — Only the primary process runs retention cleanup
+
+This prevents duplicate cron jobs from running N times (once per worker).
+
+### File Coordination Between Workers
+
+All workers write to the same log files. The logger handles this through:
+
+1. **Disk-size checks at flush time** — Each worker checks the actual file size on disk before writing, catching when other workers have filled the file
+2. **Shared overflow files** — When rotation is triggered, workers converge on the same overflow file rather than each creating their own
+3. **Filesystem-based coordination** — No explicit locking; relies on atomic file operations and size checks
+
+### Example: Cluster Setup
+
+```typescript
+import cluster from "node:cluster";
+import { createLogger } from "pino-api-logger";
+
+if (cluster.isPrimary) {
+  // Primary process: spawn workers
+  for (let i = 0; i < 4; i++) {
+    cluster.fork();
+  }
+  
+  // Primary can also create a logger for its own logs
+  const primaryLogger = createLogger({ logDir: "logs" });
+  primaryLogger.info("Primary process started");
+  
+} else {
+  // Worker process: archiver/retention auto-disabled
+  const logger = createLogger({ logDir: "logs" });
+  logger.info({ workerId: cluster.worker?.id }, "Worker started");
+  
+  // ... handle requests
+}
+```
+
+### High-Load Considerations
+
+Under very high load with many workers, log files may slightly exceed `maxLogSizeMegabytes` before rotation occurs. This is expected behavior — the trade-off prioritizes throughput over strict size limits. Files typically stay within ~1.5x the configured limit.
+
+Additionally, multiple workers may occasionally rotate simultaneously, resulting in multiple overflow files being created. While the logger mitigates this where possible, it is an inherent trade-off of coordinating writes to a single file across multiple processes without blocking. Performance is prioritized over strict rotation synchronization.
+
+For workloads requiring stricter guarantees, consider:
+- Running with fewer workers
+- Using a centralized logging service (e.g., Datadog, Elasticsearch, CloudWatch)
+- Implementing a dedicated log aggregation layer
 
 ## Performance
 
