@@ -3,84 +3,8 @@ import path from "node:path";
 import { DEFAULT_PACKAGE_NAME } from "./config";
 import type { FileRotationFrequency, ResolvedFileConfig } from "./types";
 
-type WriterState = "Idle" | "Flushing" | "Rotating" | "FlushingAndRotating";
-
 /** Options passed to FileWriter (includes logDir which is at root level) */
 export type FileWriterOptions = { logDir: string } & ResolvedFileConfig;
-
-export class FlushRotateState {
-  private _state: WriterState = "Idle";
-
-  get state() {
-    return this._state;
-  }
-
-  /** Call this when a flush is requested. Returns true if caller should start flush. */
-  requestFlush(): boolean {
-    switch (this._state) {
-      case "Idle":
-        this._state = "Flushing";
-        return true; // start flush immediately
-      case "Rotating":
-        this._state = "FlushingAndRotating";
-        return true; // start flush immediately in parallel
-      case "Flushing":
-      case "FlushingAndRotating":
-        return false; // already flushing or queued
-    }
-  }
-
-  /** Call this when a rotation is requested. Returns true if caller should start rotation. */
-  requestRotation(): boolean {
-    switch (this._state) {
-      case "Idle":
-        this._state = "Rotating";
-        return true;
-      case "Flushing":
-        this._state = "FlushingAndRotating";
-        return true;
-      case "Rotating":
-      case "FlushingAndRotating":
-        return false; // already rotating or queued
-    }
-  }
-
-  /** Call this after flush completes */
-  completeFlush() {
-    switch (this._state) {
-      case "Flushing":
-        this._state = "Idle";
-        break;
-      case "FlushingAndRotating":
-        this._state = "Rotating";
-        break;
-      default:
-        break;
-    }
-  }
-
-  /** Call this after rotation completes */
-  completeRotate() {
-    switch (this._state) {
-      case "Rotating":
-        this._state = "Idle";
-        break;
-      case "FlushingAndRotating":
-        this._state = "Flushing";
-        break;
-      default:
-        break;
-    }
-  }
-
-  isFlushing() {
-    return this._state === "Flushing" || this._state === "FlushingAndRotating";
-  }
-
-  isRotating() {
-    return this._state === "Rotating" || this._state === "FlushingAndRotating";
-  }
-}
 
 export class FileWriter {
   private logDir: string;
@@ -103,8 +27,9 @@ export class FileWriter {
   private isClosed: boolean = false; // true if the writer has been closed
   private initialFileSizeBytes = 0;
 
-  private state = new FlushRotateState();
-  private rotationPromise: Promise<void> | null = null; // Blocks writes during rotation
+  private isFlushing = false; // Flag to prevent concurrent flushes
+  private isRotating = false; // Flag to redirect writes during rotation
+  private pendingWrites: string[] = []; // Writes that arrived during rotation
 
   /** Total bytes in current log file (existing + newly written) */
   private get currentFileSizeBytes(): number {
@@ -344,34 +269,40 @@ export class FileWriter {
     return this.getOverflowLogPathSync();
   }
 
-  /** Main write interface for Pino */
-  async write(msg: string) {
+  /** Main write interface for Pino - uses flag-based buffering for rotation */
+  write(msg: string): void {
     if (!this.isEnabled || !this.stream) return;
-
-    // Wait for any pending rotation to complete before writing
-    if (this.rotationPromise) {
-      await this.rotationPromise;
-    }
 
     const line = msg.endsWith("\n") ? msg : `${msg}\n`;
     const lineBytes = Buffer.byteLength(line, "utf8");
 
-    // Check rotation BEFORE incrementing counter
+    // During rotation, buffer writes for the new file (near-zero overhead)
+    if (this.isRotating) {
+      this.pendingWrites.push(line);
+      return;
+    }
+
+    // Check if rotation is needed
     const currentPeriod = this.getPeriodString();
     const wouldExceedSize = (this.currentFileSizeBytes + lineBytes) >= this.maxLogSizeBytes;
     const needsRotation = currentPeriod !== this.currentPeriod || wouldExceedSize;
 
-    if (needsRotation && !this.rotationPromise) {
-      // Start rotation and wait for it to complete
-      this.rotationPromise = this.rotateStream()
+    if (needsRotation) {
+      // Set flag SYNCHRONOUSLY - all subsequent writes go to pending buffer
+      this.isRotating = true;
+      this.pendingWrites.push(line);
+
+      // Rotate async, then process pending writes
+      this.rotateStream()
+        .then(() => this.processPendingWrites())
         .catch((err) => console.error(`[${DEFAULT_PACKAGE_NAME}] Rotation failed`, err))
         .finally(() => {
-          this.rotationPromise = null;
+          this.isRotating = false;
         });
-      await this.rotationPromise;
+      return;
     }
 
-    // Now safe to increment counter and buffer
+    // Normal write path (99.9% of writes) - just buffer it
     this.bytesWritten += lineBytes;
     this.buffer.push(line);
     this.bufferBytes += lineBytes;
@@ -381,14 +312,39 @@ export class FileWriter {
     }
   }
 
+  /** Process writes that accumulated during rotation */
+  private processPendingWrites(): void {
+    if (this.pendingWrites.length === 0) return;
+
+    // Move pending writes to the main buffer (for the new file)
+    for (const line of this.pendingWrites) {
+      const lineBytes = Buffer.byteLength(line, "utf8");
+      this.bytesWritten += lineBytes;
+      this.buffer.push(line);
+      this.bufferBytes += lineBytes;
+    }
+
+    // Clear pending
+    this.pendingWrites = [];
+
+    // Trigger flush if buffer is full
+    if (this.buffer.length >= this.maxBufferLines || this.bufferBytes >= this.maxBufferBytes) {
+      this.flushIfNeeded();
+    }
+  }
+
   private flushIfNeeded() {
     if (this.buffer.length === 0) return;
 
-    if (this.state.requestFlush()) {
-      this.flushBuffer()
-        .catch((err) => console.error(`[${DEFAULT_PACKAGE_NAME}] Flush failed`, err)) // Catch error
-        .finally(() => this.state.completeFlush());
-    }
+    // Skip if already flushing (coalesce flushes)
+    if (this.isFlushing) return;
+
+    this.isFlushing = true;
+    this.flushBuffer()
+      .catch((err) => console.error(`[${DEFAULT_PACKAGE_NAME}] Flush failed`, err))
+      .finally(() => {
+        this.isFlushing = false;
+      });
   }
 
   private async flushBuffer() {
@@ -467,6 +423,10 @@ export class FileWriter {
     this.isClosed = true;
 
     clearInterval(this.flushTimer);
+
+    // Process any pending writes from rotation
+    this.processPendingWrites();
+
     try {
       await this.flushBuffer();
     } catch (err) {
