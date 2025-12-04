@@ -230,28 +230,31 @@ export class FileWriter {
       }
     }
 
-    // Main log is full (or excluded), look for overflow files with space
+    // Main log is full (or excluded), look for ANY overflow file with space
+    // Check all overflow files (sorted newest first) to handle race conditions
+    // when multiple workers rotate simultaneously
     const overflowPattern = this.getOverflowPattern();
     const overflowFiles = fs
       .readdirSync(this.logDir)
       .filter((f) => overflowPattern.test(f))
-      .sort(); // Alphabetical sort = chronological (timestamp in name)
+      .sort()
+      .reverse(); // Newest first (prefer recent files)
 
-    if (overflowFiles.length > 0) {
-      // Check the most recent overflow file (last in sorted order)
-      const mostRecent = overflowFiles[overflowFiles.length - 1];
-      const mostRecentPath = path.join(this.logDir, mostRecent);
+    for (const overflowFile of overflowFiles) {
+      const overflowPath = path.join(this.logDir, overflowFile);
 
       // Skip if this is the file we're rotating away from
-      if (!(excludeCurrentFile && mostRecentPath === this.currentFilePath)) {
-        try {
-          const stats = fs.statSync(mostRecentPath);
-          if (stats.size < this.maxLogSizeBytes) {
-            return mostRecentPath; // Most recent overflow has space
-          }
-        } catch {
-          // If we can't stat it, fall through to create new overflow
+      if (excludeCurrentFile && overflowPath === this.currentFilePath) {
+        continue;
+      }
+
+      try {
+        const stats = fs.statSync(overflowPath);
+        if (stats.size < this.maxLogSizeBytes) {
+          return overflowPath; // Found an overflow with space
         }
+      } catch {
+        // If we can't stat it, try next file
       }
     }
 
