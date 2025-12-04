@@ -13,6 +13,7 @@ const BENCHMARK_LOG_DIR_BASE = "./logs/benchmark/";
 const BENCHMARK_LOG_DIR = `${BENCHMARK_LOG_DIR_BASE}test`;
 const BENCHMARK_RESULTS_FILE = `${BENCHMARK_LOG_DIR_BASE}results.txt`;
 const BENCHMARK_PORT = 54321; // Fixed port for cluster communication
+const WITH_MIN_MAX_LATENCY = true;
 
 // Parse command line flags
 const INCLUDE_CONSOLE_TEST = process.argv.includes("--with-console");
@@ -241,8 +242,8 @@ async function runSingleCoreBenchmark(
     duration,
     requestsPerSecond: (result.totalRequests / duration) * 1000,
     avgLatency,
-    minLatency: result.latencies.length > 0 ? Math.min(...result.latencies) : 0,
-    maxLatency: result.latencies.length > 0 ? Math.max(...result.latencies) : 0,
+    minLatency: WITH_MIN_MAX_LATENCY ? (result.latencies.length > 0 ? Math.min(...result.latencies) : 0) : 0,
+    maxLatency: WITH_MIN_MAX_LATENCY ? (result.latencies.length > 0 ? Math.max(...result.latencies) : 0) : 0,
   };
 }
 
