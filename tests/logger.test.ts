@@ -395,7 +395,7 @@ describe("Logger Package", () => {
     const logDir = getTestLogDir("12b");
     await fs.mkdir(logDir, { recursive: true });
 
-    // Create logger with 1MB max size and small buffer for quick flushing
+    // Create logger with 1MB max size
     const logger = createLogger({
       logDir,
       file: {
@@ -405,7 +405,7 @@ describe("Logger Package", () => {
       archive: { runOnCreation: false },
     });
 
-    // Write ~1.5MB of data in chunks to trigger rotation
+    // Write ~1.5MB of data to trigger rotation
     // Each log line is ~200 bytes with overhead, so 8000 lines ≈ 1.6MB
     const lineContent = "x".repeat(150); // ~200 bytes per line with JSON overhead
     for (let i = 0; i < 8000; i++) {
@@ -428,19 +428,18 @@ describe("Logger Package", () => {
     const mainSizeMB = mainStats.size / (1024 * 1024);
 
     // Main file should be close to 1MB limit (allow some buffer overshoot)
-    // With the blocking rotation fix, it should not exceed by more than buffer size
     expect(mainSizeMB).toBeLessThan(1.2); // Allow 20% tolerance for buffer
 
-    // Check that overflow file exists and has content
+    // Check that overflow file(s) exist and have content
     const overflowFiles = logFiles.filter((f) => f !== todayFile);
     expect(overflowFiles.length).toBeGreaterThan(0);
 
-    // Verify overflow file has content
+    // Verify at least one overflow file has content
     const overflowPath = path.join(logDir, overflowFiles[0]);
     const overflowStats = await fs.stat(overflowPath);
     expect(overflowStats.size).toBeGreaterThan(0);
 
-    // Total size should be around 1.5-1.6MB
+    // Total size should be around 1.5-1.6MB (what we wrote)
     const totalSize = logFiles.reduce((sum, f) => {
       const stats = require("node:fs").statSync(path.join(logDir, f));
       return sum + stats.size;

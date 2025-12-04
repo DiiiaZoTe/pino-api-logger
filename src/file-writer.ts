@@ -18,7 +18,7 @@ export class FileWriter {
 
   private buffer: string[] = [];
   private bufferBytes = 0;
-  private bytesWritten = 0;
+  private bytesWritten = 0; // Track bytes written to current file (for single-process rotation)
 
   private currentPeriod: string = "";
   private currentFilePath: string = ""; // Track current file for disk size checks
@@ -26,15 +26,14 @@ export class FileWriter {
   private flushTimer!: NodeJS.Timeout;
   private isEnabled: boolean = true; // true if the writer is enabled, false if it is disabled due to an error
   private isClosed: boolean = false; // true if the writer has been closed
-  private initialFileSizeBytes = 0;
 
   private isFlushing = false; // Flag to prevent concurrent flushes
   private isRotating = false; // Flag to redirect writes during rotation
   private pendingWrites: string[] = []; // Writes that arrived during rotation
 
-  /** Total bytes in current log file (existing + newly written) */
+  /** Estimated bytes in current file (for single-process rotation check) */
   private get currentFileSizeBytes(): number {
-    return this.initialFileSizeBytes + (this.bytesWritten ?? 0);
+    return this.bytesWritten;
   }
 
   constructor(opts: FileWriterOptions) {
@@ -107,11 +106,13 @@ export class FileWriter {
     // Track current file path for disk size checks
     this.currentFilePath = filepath;
 
-    // Check existing file size to account for bytes already on disk
-    this.initialFileSizeBytes = this.getActualFileSizeOnDisk();
-
-    // Reset bytes written counter for the new file
-    this.bytesWritten = 0;
+    // Initialize bytesWritten with existing file size (for rotation checks)
+    try {
+      const stats = fs.statSync(filepath);
+      this.bytesWritten = stats.size;
+    } catch {
+      this.bytesWritten = 0; // File doesn't exist yet
+    }
 
     this.stream = fs.createWriteStream(filepath, { flags: "a" });
     // CRITICAL: Handle stream errors to prevent process crash
@@ -262,12 +263,15 @@ export class FileWriter {
     return this.getOverflowLogPathSync();
   }
 
-  /** Main write interface for Pino - uses flag-based buffering for rotation */
+  /**
+   * Main write interface for Pino.
+   * Size-based rotation is checked at flush time (not per-write) to allow
+   * multiple workers to converge on the same overflow file under high load.
+   */
   write(msg: string): void {
     if (!this.isEnabled || !this.stream) return;
 
     const line = msg.endsWith("\n") ? msg : `${msg}\n`;
-    const lineBytes = Buffer.byteLength(line, "utf8");
 
     // During rotation, buffer writes for the new file (near-zero overhead)
     if (this.isRotating) {
@@ -275,7 +279,9 @@ export class FileWriter {
       return;
     }
 
-    // Check if rotation is needed
+    const lineBytes = Buffer.byteLength(line, "utf8");
+
+    // Check if rotation is needed (period change OR size limit)
     const currentPeriod = this.getPeriodString();
     const wouldExceedSize = (this.currentFileSizeBytes + lineBytes) >= this.maxLogSizeBytes;
     const needsRotation = currentPeriod !== this.currentPeriod || wouldExceedSize;
@@ -285,8 +291,7 @@ export class FileWriter {
       this.isRotating = true;
       this.pendingWrites.push(line);
 
-      // Rotate async, then process pending writes
-      // Pass wouldExceedSize to skip main log check when rotating due to size
+      // Rotate: pass wouldExceedSize to exclude current file when rotating due to size
       this.rotateStream(false, wouldExceedSize)
         .then(() => this.processPendingWrites())
         .catch((err) => console.error(`[${DEFAULT_PACKAGE_NAME}] Rotation failed`, err))
@@ -296,7 +301,7 @@ export class FileWriter {
       return;
     }
 
-    // Normal write path (99.9% of writes) - just buffer it
+    // Normal write path - buffer it and track bytes
     this.bytesWritten += lineBytes;
     this.buffer.push(line);
     this.bufferBytes += lineBytes;
@@ -312,10 +317,8 @@ export class FileWriter {
 
     // Move pending writes to the main buffer (for the new file)
     for (const line of this.pendingWrites) {
-      const lineBytes = Buffer.byteLength(line, "utf8");
-      this.bytesWritten += lineBytes;
       this.buffer.push(line);
-      this.bufferBytes += lineBytes;
+      this.bufferBytes += Buffer.byteLength(line, "utf8");
     }
 
     // Clear pending
