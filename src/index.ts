@@ -1,3 +1,4 @@
+import cluster from "node:cluster";
 import { startArchiver } from "./archiver";
 import { runArchiverWorker } from "./archiver-worker";
 import { DEFAULT_LOGGER_OPTIONS, DEFAULT_PACKAGE_NAME } from "./config";
@@ -217,6 +218,13 @@ function validateLoggerOptions(options: LoggerOptions): ResolvedLoggerOptions {
 
   // If not writing to file, disable archiving and retention (nothing to archive/retain)
   if (resolved.file.enabled === false) {
+    resolved.archive.disabled = true;
+    resolved.retention.period = undefined;
+  }
+
+  // Auto-disable archiving/retention in cluster workers
+  // Primary process handles archiving/retention for all workers
+  if (cluster.isWorker) {
     resolved.archive.disabled = true;
     resolved.retention.period = undefined;
   }
