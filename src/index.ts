@@ -222,9 +222,10 @@ function validateLoggerOptions(options: LoggerOptions): ResolvedLoggerOptions {
     resolved.retention.period = undefined;
   }
 
-  // Auto-disable archiving/retention in cluster workers
-  // Primary process handles archiving/retention for all workers
-  if (cluster.isWorker) {
+  // Enable archiver/retention only for: primary process OR worker #1
+  // This ensures exactly one process handles cron jobs per logDir
+  const isCoordinator = cluster.isPrimary || cluster.worker?.id === 1;
+  if (!isCoordinator) {
     resolved.archive.disabled = true;
     resolved.retention.period = undefined;
   }
