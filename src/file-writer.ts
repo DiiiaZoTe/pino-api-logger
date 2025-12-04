@@ -104,6 +104,7 @@ export class FileWriter {
   private initialFileSizeBytes = 0;
 
   private state = new FlushRotateState();
+  private rotationPromise: Promise<void> | null = null; // Blocks writes during rotation
 
   /** Total bytes in current log file (existing + newly written) */
   private get currentFileSizeBytes(): number {
@@ -346,18 +347,32 @@ export class FileWriter {
   /** Main write interface for Pino */
   async write(msg: string) {
     if (!this.isEnabled || !this.stream) return;
-    const line = msg.endsWith("\n") ? msg : `${msg}\n`;
-    const lineBytes = Buffer.byteLength(line, "utf8");
-    this.bytesWritten += lineBytes;
 
-    // Check rotation by period (day or hour depending on frequency)
-    const currentPeriod = this.getPeriodString();
-    if (currentPeriod !== this.currentPeriod) {
-      this.requestRotation();
-    } else if (this.currentFileSizeBytes >= this.maxLogSizeBytes) {
-      this.requestRotation();
+    // Wait for any pending rotation to complete before writing
+    if (this.rotationPromise) {
+      await this.rotationPromise;
     }
 
+    const line = msg.endsWith("\n") ? msg : `${msg}\n`;
+    const lineBytes = Buffer.byteLength(line, "utf8");
+
+    // Check rotation BEFORE incrementing counter
+    const currentPeriod = this.getPeriodString();
+    const wouldExceedSize = (this.currentFileSizeBytes + lineBytes) >= this.maxLogSizeBytes;
+    const needsRotation = currentPeriod !== this.currentPeriod || wouldExceedSize;
+
+    if (needsRotation && !this.rotationPromise) {
+      // Start rotation and wait for it to complete
+      this.rotationPromise = this.rotateStream()
+        .catch((err) => console.error(`[${DEFAULT_PACKAGE_NAME}] Rotation failed`, err))
+        .finally(() => {
+          this.rotationPromise = null;
+        });
+      await this.rotationPromise;
+    }
+
+    // Now safe to increment counter and buffer
+    this.bytesWritten += lineBytes;
     this.buffer.push(line);
     this.bufferBytes += lineBytes;
 
@@ -373,14 +388,6 @@ export class FileWriter {
       this.flushBuffer()
         .catch((err) => console.error(`[${DEFAULT_PACKAGE_NAME}] Flush failed`, err)) // Catch error
         .finally(() => this.state.completeFlush());
-    }
-  }
-
-  private requestRotation() {
-    if (this.state.requestRotation()) {
-      this.rotateStream()
-        .catch((err) => console.error(`[${DEFAULT_PACKAGE_NAME}] Rotation failed`, err)) // Catch error
-        .finally(() => this.state.completeRotate());
     }
   }
 

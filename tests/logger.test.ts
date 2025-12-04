@@ -391,6 +391,65 @@ describe("Logger Package", () => {
     expect(overflowContent).toContain("This should append to existing overflow"); // New content appended
   });
 
+  it("12b - should rotate to overflow file when writing exceeds maxLogSizeMegabytes", async () => {
+    const logDir = getTestLogDir("12b");
+    await fs.mkdir(logDir, { recursive: true });
+
+    // Create logger with 1MB max size and small buffer for quick flushing
+    const logger = createLogger({
+      logDir,
+      file: {
+        maxLogSizeMegabytes: 1,
+      },
+      console: { enabled: false },
+      archive: { runOnCreation: false },
+    });
+
+    // Write ~1.5MB of data in chunks to trigger rotation
+    // Each log line is ~200 bytes with overhead, so 8000 lines ≈ 1.6MB
+    const lineContent = "x".repeat(150); // ~200 bytes per line with JSON overhead
+    for (let i = 0; i < 8000; i++) {
+      logger.info({ line: i }, lineContent);
+    }
+
+    // Wait for all writes and rotation to complete
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+
+    // Check that files were created
+    const files = await fs.readdir(logDir);
+    const logFiles = files.filter((f) => f.endsWith(".log"));
+
+    // Should have at least 2 files: main log + overflow
+    expect(logFiles.length).toBeGreaterThanOrEqual(2);
+
+    // Check main log file size - should be around 1MB (not much more)
+    const mainLogPath = path.join(logDir, todayFile);
+    const mainStats = await fs.stat(mainLogPath);
+    const mainSizeMB = mainStats.size / (1024 * 1024);
+
+    // Main file should be close to 1MB limit (allow some buffer overshoot)
+    // With the blocking rotation fix, it should not exceed by more than buffer size
+    expect(mainSizeMB).toBeLessThan(1.2); // Allow 20% tolerance for buffer
+
+    // Check that overflow file exists and has content
+    const overflowFiles = logFiles.filter((f) => f !== todayFile);
+    expect(overflowFiles.length).toBeGreaterThan(0);
+
+    // Verify overflow file has content
+    const overflowPath = path.join(logDir, overflowFiles[0]);
+    const overflowStats = await fs.stat(overflowPath);
+    expect(overflowStats.size).toBeGreaterThan(0);
+
+    // Total size should be around 1.5-1.6MB
+    const totalSize = logFiles.reduce((sum, f) => {
+      const stats = require("node:fs").statSync(path.join(logDir, f));
+      return sum + stats.size;
+    }, 0);
+    const totalSizeMB = totalSize / (1024 * 1024);
+    expect(totalSizeMB).toBeGreaterThan(1.4);
+    expect(totalSizeMB).toBeLessThan(2.0);
+  });
+
   it("13 - should not write to file when file.enabled is false", async () => {
     const logDir = getTestLogDir("13");
     await fs.mkdir(logDir, { recursive: true });
