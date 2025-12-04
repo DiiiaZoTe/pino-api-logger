@@ -94,6 +94,7 @@ export class FileWriter {
 
   private buffer: string[] = [];
   private bufferBytes = 0;
+  private bytesWritten = 0;
 
   private currentPeriod: string = "";
   private stream: fs.WriteStream | undefined = undefined;
@@ -106,7 +107,7 @@ export class FileWriter {
 
   /** Total bytes in current log file (existing + newly written) */
   private get currentFileSizeBytes(): number {
-    return this.initialFileSizeBytes + (this.stream?.bytesWritten ?? 0);
+    return this.initialFileSizeBytes + (this.bytesWritten ?? 0);
   }
 
   constructor(opts: FileWriterOptions) {
@@ -183,6 +184,9 @@ export class FileWriter {
     } catch {
       this.initialFileSizeBytes = 0; // File doesn't exist yet
     }
+
+    // Reset bytes written counter for the new file
+    this.bytesWritten = 0;
 
     this.stream = fs.createWriteStream(filepath, { flags: "a" });
     // CRITICAL: Handle stream errors to prevent process crash
@@ -344,12 +348,13 @@ export class FileWriter {
     if (!this.isEnabled || !this.stream) return;
     const line = msg.endsWith("\n") ? msg : `${msg}\n`;
     const lineBytes = Buffer.byteLength(line, "utf8");
+    this.bytesWritten += lineBytes;
 
     // Check rotation by period (day or hour depending on frequency)
     const currentPeriod = this.getPeriodString();
     if (currentPeriod !== this.currentPeriod) {
       this.requestRotation();
-    } else if (this.currentFileSizeBytes + lineBytes >= this.maxLogSizeBytes) {
+    } else if (this.currentFileSizeBytes >= this.maxLogSizeBytes) {
       this.requestRotation();
     }
 
