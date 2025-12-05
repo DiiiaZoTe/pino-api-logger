@@ -16,6 +16,10 @@ export function getRetentionCron(unit: RetentionUnit): string {
 
 /** Run the retention worker in a separate thread */
 export function runRetentionWorker(options: ResolvedLoggerOptions) {
+  // Check if we're coordinator before running
+  if (!isCoordinator(options.logDir)) {
+    return; // Skip if not coordinator
+  }
   const workerPath = path.resolve(__dirname, "retention-worker.js");
   new Worker(workerPath, { workerData: options });
 }
@@ -29,7 +33,7 @@ export function startRetention(options: LoggerWithArchiverOptions) {
 
   // If no retention configured, return a no-op stop function
   if (!retentionPeriod) {
-    return () => {};
+    return () => { };
   }
 
   // Run retention check on creation
@@ -49,21 +53,21 @@ function scheduleNextRun(options: LoggerWithArchiverOptions) {
   const retentionPeriod = options.retention.period;
 
   if (!retentionPeriod) {
-    return () => {};
+    return () => { };
   }
 
   const { unit } = parseRetention(retentionPeriod);
   const retentionCron = getRetentionCron(unit);
 
-  logger.info(
-    `Scheduling retention check with retention: ${retentionPeriod} (cron: ${retentionCron})`,
-  );
+  const isCoordinatorWorker = isCoordinator(options.logDir);
+
+  if (isCoordinatorWorker) {
+    logger.info(
+      `Scheduling retention check with retention: ${retentionPeriod} (cron: ${retentionCron})`,
+    );
+  }
 
   const task = cron.schedule(retentionCron, () => {
-    // Check if we're coordinator before running
-    if (!isCoordinator(options.logDir)) {
-      return; // Skip if not coordinator
-    }
     runRetentionWorker(workerData);
   });
 

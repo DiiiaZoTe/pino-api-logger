@@ -15,6 +15,10 @@ export function getArchiveCron(frequency: ArchiveFrequency): string {
 
 /** Run the archiver worker in a separate thread */
 export function runArchiverWorker(options: ResolvedLoggerOptions) {
+  // Check if we're coordinator before running
+  if (!isCoordinator(options.logDir)) {
+    return; // Skip if not coordinator
+  }
   const workerPath = path.resolve(__dirname, "archiver-worker.js");
   new Worker(workerPath, { workerData: options });
 }
@@ -39,17 +43,14 @@ export function startArchiver(options: LoggerWithArchiverOptions) {
 function scheduleNextRun(options: LoggerWithArchiverOptions) {
   const { logger, ...workerData } = options;
   const archiveCron = getArchiveCron(options.archive.frequency);
+  const isCoordinatorWorker = isCoordinator(options.logDir);
 
-  if (options.archive.logging)
+  if (isCoordinatorWorker && options.archive.logging)
     logger.info(
       `Scheduling archive run with frequency: ${options.archive.frequency} (cron: ${archiveCron})`,
     );
 
   const task = cron.schedule(archiveCron, () => {
-    // Check if we're coordinator before running
-    if (!isCoordinator(options.logDir)) {
-      return; // Skip if not coordinator
-    }
     runArchiverWorker(workerData);
   });
 

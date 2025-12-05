@@ -227,12 +227,7 @@ function validateLoggerOptions(options: LoggerOptions): ResolvedLoggerOptions {
   // Enable archiver/retention only for coordinator process
   // In cluster mode: primary is coordinator, or first worker to claim the role
   // Uses atomic mkdir to elect coordinator (worker IDs aren't reliable - they're global counters)
-  const claimedCoordinator = tryClaimCoordinator(resolved.logDir);
-
-  if (!claimedCoordinator) {
-    resolved.archive.disabled = true;
-    resolved.retention.period = undefined;
-  }
+  const _claimedCoordinator = tryClaimCoordinator(resolved.logDir);
 
   // Validate constraint hierarchy
   validateConstraintHierarchy(
