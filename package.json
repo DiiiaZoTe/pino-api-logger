@@ -23,7 +23,7 @@
     "benchmark:multi-core": "bun run build && bun run tests/benchmark.ts --multi-core",
     "benchmark:with-console": "bun run build && bun run tests/benchmark.ts --with-console",
     "benchmark:multi-core-console": "bun run build && bun run tests/benchmark.ts --multi-core --with-console",
-    "clean": "rimraf dist logs-test logs-benchmark",
+    "clean": "rimraf dist logs",
     "size": "gzip-size dist/**/*.js",
     "lint": "biome check src",
     "format": "biome format --write src --line-ending auto",
