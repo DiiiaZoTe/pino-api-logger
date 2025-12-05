@@ -1,5 +1,6 @@
 import cluster from "node:cluster";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { startArchiver } from "./archiver";
 import { DEFAULT_PACKAGE_NAME } from "./config";
@@ -97,7 +98,7 @@ export function tryClaimCoordinator(logDir: string): boolean {
   // Check for stale lock from crashed process
   if (fs.existsSync(lockPath) && isCoordinatorLockStale(lockPath)) {
     try {
-      fs.rmdirSync(lockPath);
+      fs.rmSync(lockPath, { recursive: true, force: true });
     } catch {
       // Another process might have claimed it, that's fine
     }
@@ -111,6 +112,18 @@ export function tryClaimCoordinator(logDir: string): boolean {
 
     // Try atomic mkdir - only one process will succeed
     fs.mkdirSync(lockPath);
+
+    // Write metadata for debugging (PID, hostname, timestamp)
+    const metaPath = path.join(lockPath, "meta.json");
+    fs.writeFileSync(
+      metaPath,
+      JSON.stringify({
+        pid: process.pid,
+        hostname: os.hostname(),
+        workerId: cluster.worker?.id,
+        startedAt: new Date().toISOString(),
+      }),
+    );
 
     // We are the coordinator - start heartbeat to prevent stale lock detection
     const heartbeat = setInterval(() => {
@@ -138,7 +151,7 @@ export function releaseCoordinator(logDir: string): void {
 
   const lockPath = getCoordinatorLockPath(logDir);
   try {
-    fs.rmdirSync(lockPath);
+    fs.rmSync(lockPath, { recursive: true, force: true });
   } catch {
     // Lock might already be gone, ignore
   }
@@ -237,7 +250,7 @@ export function createArchiverController(
       if (existing.options.dir !== opts.archive.dir) {
         throw new Error(
           `[${DEFAULT_PACKAGE_NAME}] Cannot create multiple archivers for logDir "${key}" with conflicting archive.dir. ` +
-          `Existing: ${existing.options.dir}, Requested: ${opts.archive.dir}`,
+            `Existing: ${existing.options.dir}, Requested: ${opts.archive.dir}`,
         );
       }
 

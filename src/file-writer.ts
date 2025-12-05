@@ -345,7 +345,7 @@ export class FileWriter {
 
     // Check if rotation is needed (period change OR size limit)
     const currentPeriod = this.getPeriodString();
-    const wouldExceedSize = (this.currentFileSizeBytes + lineBytes) >= this.maxLogSizeBytes;
+    const wouldExceedSize = this.currentFileSizeBytes + lineBytes >= this.maxLogSizeBytes;
     const needsRotation = currentPeriod !== this.currentPeriod || wouldExceedSize;
 
     if (needsRotation) {

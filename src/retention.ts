@@ -2,6 +2,7 @@ import path from "node:path";
 import { Worker } from "node:worker_threads";
 import cron from "node-cron";
 import { DEFAULT_RETENTION_CRON } from "./config";
+import { isCoordinator } from "./registry";
 import type { LoggerWithArchiverOptions, ResolvedLoggerOptions, RetentionUnit } from "./types";
 import { parseRetention } from "./utilities";
 
@@ -28,7 +29,7 @@ export function startRetention(options: LoggerWithArchiverOptions) {
 
   // If no retention configured, return a no-op stop function
   if (!retentionPeriod) {
-    return () => { };
+    return () => {};
   }
 
   // Run retention check on creation
@@ -48,7 +49,7 @@ function scheduleNextRun(options: LoggerWithArchiverOptions) {
   const retentionPeriod = options.retention.period;
 
   if (!retentionPeriod) {
-    return () => { };
+    return () => {};
   }
 
   const { unit } = parseRetention(retentionPeriod);
@@ -59,6 +60,10 @@ function scheduleNextRun(options: LoggerWithArchiverOptions) {
   );
 
   const task = cron.schedule(retentionCron, () => {
+    // Check if we're coordinator before running
+    if (!isCoordinator(options.logDir)) {
+      return; // Skip if not coordinator
+    }
     runRetentionWorker(workerData);
   });
 

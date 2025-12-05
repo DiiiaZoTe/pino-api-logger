@@ -10,9 +10,9 @@ export function internalCreateLogger(options: ResolvedLoggerOptions) {
   // Use registry to ensure singleton writer per directory (only if writing to file)
   const fileWriter = file.enabled
     ? getOrCreateFileWriter({
-      logDir,
-      ...file,
-    })
+        logDir,
+        ...file,
+      })
     : null;
 
   // Build streams array for pino.multistream

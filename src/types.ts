@@ -269,4 +269,6 @@ export type PinoLoggerExtended = pino.Logger<never, boolean> & {
   getParams: () => ResolvedLoggerOptions;
   /** Close the logger and flush any remaining buffered logs */
   close: () => Promise<void>;
+  /** Check if this logger instance is the coordinator (handles archiving/retention) */
+  isCoordinator: () => boolean;
 };

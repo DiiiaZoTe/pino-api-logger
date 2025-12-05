@@ -2,6 +2,7 @@ import path from "node:path";
 import { Worker } from "node:worker_threads";
 import cron from "node-cron";
 import { DEFAULT_ARCHIVE_CRON } from "./config";
+import { isCoordinator } from "./registry";
 import type { ArchiveFrequency, LoggerWithArchiverOptions, ResolvedLoggerOptions } from "./types";
 
 /**
@@ -45,6 +46,10 @@ function scheduleNextRun(options: LoggerWithArchiverOptions) {
     );
 
   const task = cron.schedule(archiveCron, () => {
+    // Check if we're coordinator before running
+    if (!isCoordinator(options.logDir)) {
+      return; // Skip if not coordinator
+    }
     runArchiverWorker(workerData);
   });
 
