@@ -33,7 +33,7 @@ export function startRetention(options: LoggerWithArchiverOptions) {
 
   // If no retention configured, return a no-op stop function
   if (!retentionPeriod) {
-    return () => { };
+    return () => {};
   }
 
   // Run retention check on creation
@@ -53,7 +53,7 @@ function scheduleNextRun(options: LoggerWithArchiverOptions) {
   const retentionPeriod = options.retention.period;
 
   if (!retentionPeriod) {
-    return () => { };
+    return () => {};
   }
 
   const { unit } = parseRetention(retentionPeriod);
