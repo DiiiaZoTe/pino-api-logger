@@ -436,7 +436,6 @@ const logger = createLogger({
 const logger = createLogger({
   file: {
     rotationFrequency: "hourly",
-    maxLogSizeMegabytes: 50,  // Smaller files for faster processing
   },
   archive: { frequency: "hourly" },
   retention: { period: "24h" },  // Only keep last 24 hours of logs
@@ -654,7 +653,9 @@ This ensures only one overflow file is created per rotation event, even under hi
 
 ### High-Load Considerations
 
-Under very high load, log files may slightly exceed `maxLogSizeMegabytes` before rotation occurs. This is expected behavior — files typically stay within ~1.2x the configured limit.
+Under very high load, log files may slightly exceed `maxLogSizeMegabytes` before rotation occurs. This is expected behavior — files typically stay within ~1.2x the configured limit. 
+
+At extremely high throughput in cluster mode, rapid consecutive rotations can occasionally occur, potentially creating multiple overflow files within the same second. This is a rare edge case and doesn't affect log integrity. However, it may cause one or the other overflow log file to fill up before the other. There is no telling which will be picked up as the faster to perform rotation will be picked up by the other workers.
 
 For extremely high-throughput workloads, consider:
 - Increasing `maxLogSizeMegabytes` (e.g., 200-500MB) to reduce rotation frequency
@@ -666,15 +667,27 @@ For extremely high-throughput workloads, consider:
 Based on our own benchmarks, the default file writer options (`file.flushInterval`, `file.maxBufferLines`, `file.maxBufferKilobytes`, `file.maxLogSizeMegabytes`) provide good performance overall for a normal size load and normal size usage. 
 The default configuration provides a good balance of performance while maintaining reliable log persistence.
 
-You run your own benchmarks for this by cloning the repository and running:
+Our benchmarks make use of `autocannon` to push the system to its limits.
+
+You can run your own benchmarks for this by cloning the repository and running:
 ```bash
 bun run benchmark
 ```
-or to also include console with pino-pretty
+This is for single threaded (Hono like server).
+
+To also include console with pino-pretty
 ```bash
 bun run benchmark:with-console
 ```
-This benchmark is also not 100% reliable but from our observations it performs correctly when compared to the native pino/file transport while providing extra options.
+To run the benchmark using all the CPU cores avaibles in multi-threaded mode:
+```bash
+bun run benchmark:multi-core
+```
+To run the benchmark multi-threaded and with console:
+```bash
+bun run benchmark:multi-core-console
+```
+This benchmark is also not 100% reliable but from our observations it performs correctly and pretty much similarly when compared to the native pino/file transport while providing extra options.
 
 ## License
 
