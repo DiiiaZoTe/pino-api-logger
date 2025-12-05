@@ -582,12 +582,12 @@ When running in a clustered environment using `node:cluster` (or Bun's cluster s
 
 ### Auto-Detection Behavior
 
-In cluster mode:
-- **Worker #1** runs archiving and retention (acts as coordinator)
-- **Workers #2+** have archiving and retention auto-disabled
-- **Primary process** runs archiving and retention normally (if it creates a logger)
+In cluster mode, coordinator election happens automatically:
+- **Primary process** is always the coordinator (if it creates a logger)
+- **First worker** to create a logger claims coordinator role via atomic lock
+- **Other workers** have archiving and retention auto-disabled
 
-This ensures exactly one process handles cron jobs, even if your primary process doesn't create a logger.
+This ensures exactly one process handles cron jobs, regardless of worker IDs or startup order.
 
 ### File Coordination Between Workers
 
@@ -614,7 +614,7 @@ if (cluster.isPrimary) {
   primaryLogger.info("Primary process started");
   
 } else {
-  // Worker #1 runs archiver/retention, others auto-disabled
+  // First worker to create logger becomes coordinator (runs archiver/retention)
   const logger = createLogger({ logDir: "logs" });
   logger.info({ workerId: cluster.worker?.id }, "Worker started");
   

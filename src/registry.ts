@@ -1,3 +1,6 @@
+import cluster from "node:cluster";
+import fs from "node:fs";
+import path from "node:path";
 import { startArchiver } from "./archiver";
 import { DEFAULT_PACKAGE_NAME } from "./config";
 import { FileWriter, type FileWriterOptions } from "./file-writer";
@@ -9,6 +12,10 @@ import type {
   ResolvedRetentionConfig,
 } from "./types";
 import { getShorterRetention } from "./utilities";
+
+/** Coordinator lock settings */
+const COORDINATOR_LOCK_STALE_MS = 30000; // Consider lock stale after 30s (crashed process)
+const COORDINATOR_LOCK_HEARTBEAT_MS = 10000; // Update lock mtime every 10s
 
 /**
  * Registry to ensure we only have one FileWriter per log directory.
@@ -29,6 +36,136 @@ const archiverRegistry = new Map<string, { stop: () => void; options: ResolvedAr
  * Value: function to stop the retention scheduler
  */
 const retentionRegistry = new Map<string, { stop: () => void; options: ResolvedRetentionConfig }>();
+
+/**
+ * Registry to track which logDirs this process is coordinator for.
+ * Key: absolute path of logDir
+ * Value: heartbeat interval timer
+ */
+const coordinatorRegistry = new Map<string, NodeJS.Timeout>();
+
+/**
+ * Get the coordinator lock path for a logDir.
+ */
+function getCoordinatorLockPath(logDir: string): string {
+  return path.join(logDir, ".coordinator-lock");
+}
+
+/**
+ * Check if a coordinator lock is stale (from a crashed process).
+ */
+function isCoordinatorLockStale(lockPath: string): boolean {
+  try {
+    const stats = fs.statSync(lockPath);
+    const lockAge = Date.now() - stats.mtimeMs;
+    return lockAge > COORDINATOR_LOCK_STALE_MS;
+  } catch {
+    return true; // Lock doesn't exist, consider it "stale" (available)
+  }
+}
+
+/**
+ * Update the coordinator lock mtime (heartbeat).
+ */
+function touchCoordinatorLock(lockPath: string): void {
+  try {
+    const now = new Date();
+    fs.utimesSync(lockPath, now, now);
+  } catch {
+    // Lock might have been removed, ignore
+  }
+}
+
+/**
+ * Try to claim coordinator role for a logDir using atomic mkdir.
+ * First worker to successfully create the lock directory becomes coordinator.
+ * Handles stale locks from crashed processes.
+ * Returns true if this process is the coordinator.
+ */
+export function tryClaimCoordinator(logDir: string): boolean {
+  // Primary process is always coordinator
+  if (cluster.isPrimary) return true;
+
+  // Not in cluster mode at all - this process is coordinator
+  if (!cluster.isWorker) return true;
+
+  // Already coordinator for this logDir
+  if (coordinatorRegistry.has(logDir)) return true;
+
+  const lockPath = getCoordinatorLockPath(logDir);
+
+  // Check for stale lock from crashed process
+  if (fs.existsSync(lockPath) && isCoordinatorLockStale(lockPath)) {
+    try {
+      fs.rmdirSync(lockPath);
+    } catch {
+      // Another process might have claimed it, that's fine
+    }
+  }
+
+  try {
+    // Ensure logDir exists first
+    if (!fs.existsSync(logDir)) {
+      fs.mkdirSync(logDir, { recursive: true });
+    }
+
+    // Try atomic mkdir - only one process will succeed
+    fs.mkdirSync(lockPath);
+
+    // We are the coordinator - start heartbeat to prevent stale lock detection
+    const heartbeat = setInterval(() => {
+      touchCoordinatorLock(lockPath);
+    }, COORDINATOR_LOCK_HEARTBEAT_MS);
+    heartbeat.unref?.(); // Don't prevent process exit
+
+    coordinatorRegistry.set(logDir, heartbeat);
+    return true;
+  } catch {
+    return false; // Another worker claimed coordinator role
+  }
+}
+
+/**
+ * Release coordinator role for a logDir.
+ * Called during cleanup/shutdown.
+ */
+export function releaseCoordinator(logDir: string): void {
+  const heartbeat = coordinatorRegistry.get(logDir);
+  if (heartbeat) {
+    clearInterval(heartbeat);
+    coordinatorRegistry.delete(logDir);
+  }
+
+  const lockPath = getCoordinatorLockPath(logDir);
+  try {
+    fs.rmdirSync(lockPath);
+  } catch {
+    // Lock might already be gone, ignore
+  }
+}
+
+/**
+ * Release all coordinator locks held by this process.
+ */
+function releaseAllCoordinators(): void {
+  for (const logDir of coordinatorRegistry.keys()) {
+    releaseCoordinator(logDir);
+  }
+}
+
+/**
+ * Check if this process is the coordinator for a given logDir.
+ */
+export function isCoordinator(logDir: string): boolean {
+  // Primary process is always coordinator
+  if (cluster.isPrimary) return true;
+
+  // Not in cluster mode at all - this process is coordinator
+  if (!cluster.isWorker) return true;
+
+  // Check if we claimed coordinator for this logDir
+  return coordinatorRegistry.has(logDir);
+}
 
 /**
  * Archive frequency priority (lower = stricter/more frequent)
@@ -241,4 +378,38 @@ export function cleanupLogRegistry() {
     retention.stop();
   }
   retentionRegistry.clear();
+
+  // Release all coordinator locks
+  releaseAllCoordinators();
 }
+
+// Register cleanup handlers for graceful shutdown
+// These ensure coordinator locks are released even on unexpected exit
+let cleanupRegistered = false;
+function registerCleanupHandlers(): void {
+  if (cleanupRegistered) return;
+  cleanupRegistered = true;
+
+  const cleanup = () => {
+    releaseAllCoordinators();
+  };
+
+  // Handle various exit scenarios
+  process.on("exit", cleanup);
+  process.on("SIGINT", () => {
+    cleanup();
+    process.exit(130);
+  });
+  process.on("SIGTERM", () => {
+    cleanup();
+    process.exit(143);
+  });
+  process.on("uncaughtException", (err) => {
+    console.error(`[${DEFAULT_PACKAGE_NAME}] Uncaught exception, cleaning up...`, err);
+    cleanup();
+    process.exit(1);
+  });
+}
+
+// Register cleanup handlers when module loads
+registerCleanupHandlers();

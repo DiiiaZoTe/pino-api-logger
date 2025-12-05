@@ -1,4 +1,3 @@
-import cluster from "node:cluster";
 import { startArchiver } from "./archiver";
 import { runArchiverWorker } from "./archiver-worker";
 import { DEFAULT_LOGGER_OPTIONS, DEFAULT_PACKAGE_NAME } from "./config";
@@ -8,6 +7,8 @@ import {
   createArchiverController,
   createRetentionController,
   getOrCreateFileWriter,
+  isCoordinator,
+  tryClaimCoordinator,
 } from "./registry";
 import { runRetentionWorker } from "./retention-worker";
 import type {
@@ -20,7 +21,7 @@ import type {
 } from "./types";
 import { frequencyToHours, parseRetention, retentionToHours } from "./utilities";
 
-export { startArchiver, cleanupLogRegistry, getOrCreateFileWriter };
+export { startArchiver, cleanupLogRegistry, getOrCreateFileWriter, isCoordinator };
 export type { PrettyOptions } from "pino-pretty";
 export type { ArchiverController, RetentionController } from "./registry";
 export type {
@@ -222,10 +223,15 @@ function validateLoggerOptions(options: LoggerOptions): ResolvedLoggerOptions {
     resolved.retention.period = undefined;
   }
 
-  // Enable archiver/retention only for: primary process OR worker #1
-  // This ensures exactly one process handles cron jobs per logDir
-  const isCoordinator = cluster.isPrimary || cluster.worker?.id === 1;
-  if (!isCoordinator) {
+  // Enable archiver/retention only for coordinator process
+  // In cluster mode: primary is coordinator, or first worker to claim the role
+  // Uses atomic mkdir to elect coordinator (worker IDs aren't reliable - they're global counters)
+  const claimedCoordinator = tryClaimCoordinator(resolved.logDir);
+
+  // DEBUG: Log coordinator status
+  console.log(`[DEBUG] logDir=${resolved.logDir}, claimedCoordinator=${claimedCoordinator}, archive.disabled=${resolved.archive.disabled}`);
+
+  if (!claimedCoordinator) {
     resolved.archive.disabled = true;
     resolved.retention.period = undefined;
   }
