@@ -14,31 +14,6 @@ A self-hosted, server-side API logger built on top of [Pino](https://github.com/
 - 🔄 **Singleton Pattern** — Ensures one file writer per log directory, even with multiple logger instances
 - 🎨 **Pretty Console Output** — Uses `pino-pretty` for readable development logs
 
-
-
-## v2.0 Breaking Changes
-
-Version 2.0 introduces a completely restructured options API and several new features:
-
-- **Nested options structure** — Options are now grouped into `file`, `console`, `archive`, and `retention` objects
-- **`archiveCron` removed** — Replaced by `archive.frequency` which automatically determines the cron schedule
-- **Renamed options:**
-  - `toFile` → `file.enabled`
-  - `toConsole` → `console.enabled`
-  - `pinoPretty` → `console.pretty`
-  - `fileRotationFrequency` → `file.rotationFrequency`
-  - `maxDailyLogSizeMegabytes` → `file.maxLogSizeMegabytes`
-  - `archiveFrequency` → `archive.frequency`
-  - `runArchiveOnCreation` → `archive.runOnCreation`
-  - `archiveDir` → `archive.dir`
-  - `archiveLogging` → `archive.logging`
-  - `disableArchiving` → `archive.disabled`
-  - `logRetention` → `retention.period`
-- **New methods** — `runArchiver()` and `runRetention()` for manual execution
-- **Constraint validation** — Invalid configuration combinations now throw errors at logger creation
-
-## Batteries-Included with Customization
-
 This package provides **sensible defaults** for a production-ready logging setup while allowing you to customize Pino's configuration when needed.
 
 **Defaults (can be overridden via `pinoOptions`):**
