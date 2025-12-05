@@ -13,7 +13,7 @@ export function getArchiveCron(frequency: ArchiveFrequency): string {
   return DEFAULT_ARCHIVE_CRON[frequency];
 }
 
-/** Run the archiver worker in a separate thread */
+/** Run the archiver worker in a separate thread. If not coordinator, skip. */
 export function runArchiverWorker(options: ResolvedLoggerOptions) {
   // Check if we're coordinator before running
   if (!isCoordinator(options.logDir)) {

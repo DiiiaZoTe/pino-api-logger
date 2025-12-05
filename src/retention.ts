@@ -14,7 +14,7 @@ export function getRetentionCron(unit: RetentionUnit): string {
   return DEFAULT_RETENTION_CRON[unit];
 }
 
-/** Run the retention worker in a separate thread */
+/** Run the retention worker in a separate thread. If not coordinator, skip. */
 export function runRetentionWorker(options: ResolvedLoggerOptions) {
   // Check if we're coordinator before running
   if (!isCoordinator(options.logDir)) {

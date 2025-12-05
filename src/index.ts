@@ -224,8 +224,9 @@ function validateLoggerOptions(options: LoggerOptions): ResolvedLoggerOptions {
     resolved.retention.period = undefined;
   }
 
-  // Enable archiver/retention only for coordinator process
-  // In cluster mode: primary is coordinator, or first worker to claim the role
+  // Attempt to claim coordinator role for this logDir
+  // In cluster mode: primary is always coordinator, or first worker to claim the role via atomic mkdir
+  // All workers schedule archiver/retention cron jobs, but only coordinator executes them (checked at runtime)
   // Uses atomic mkdir to elect coordinator (worker IDs aren't reliable - they're global counters)
   const _claimedCoordinator = tryClaimCoordinator(resolved.logDir);
 

@@ -297,6 +297,7 @@ Returns a Pino logger with additional methods:
 - **`logger.runRetention()`** — Runs retention cleanup immediately (async, returns when complete)
 - **`logger.close()`** — Flushes the buffer and closes the file writer stream (async)
 - **`logger.getParams()`** — Returns the resolved logger configuration
+- **`logger.isCoordinator()`** — Returns `true` if this logger instance is the coordinator (handles archiving/retention in cluster mode)
 
 ### `cleanupLogRegistry()`
 
@@ -584,10 +585,23 @@ When running in a clustered environment using `node:cluster` (or Bun's cluster s
 
 In cluster mode, coordinator election happens automatically:
 - **Primary process** is always the coordinator (if it creates a logger)
-- **First worker** to create a logger claims coordinator role via atomic lock
-- **Other workers** have archiving and retention auto-disabled
+- **First worker** to create a logger claims coordinator role via atomic `mkdir` lock
+- **All workers** schedule archiver/retention cron jobs, but only the coordinator executes them
+- **Automatic takeover** — If the coordinator crashes, another worker automatically becomes coordinator on the next cron run
 
-This ensures exactly one process handles cron jobs, regardless of worker IDs or startup order.
+This ensures exactly one process handles archiving/retention execution, regardless of worker IDs or startup order. The coordinator role is checked at runtime when archive and retention worker runs, allowing seamless failover.
+
+### Coordinator Election
+
+The coordinator is elected using an atomic filesystem operation:
+
+1. **Lock mechanism** — Uses `mkdir` to create a `.coordinator-lock` directory (atomic on most filesystems)
+2. **Stale lock detection** — Locks older than 30 seconds are considered stale (crashed process) and removed
+3. **Heartbeat** — Coordinator updates the lock's mtime every 10 seconds to prevent stale detection
+4. **Metadata** — Lock directory contains `meta.json` with PID, hostname, worker ID, and start timestamp for debugging
+5. **Cleanup** — Lock is automatically released on process exit (SIGINT, SIGTERM, uncaughtException)
+
+If the coordinator crashes, the next worker to check `isCoordinator()` will detect the stale lock, remove it, and claim the coordinator role.
 
 ### File Coordination Between Workers
 
@@ -614,9 +628,14 @@ if (cluster.isPrimary) {
   primaryLogger.info("Primary process started");
   
 } else {
-  // First worker to create logger becomes coordinator (runs archiver/retention)
+  // All workers create loggers; first to claim coordinator role runs archiver/retention
   const logger = createLogger({ logDir: "logs" });
   logger.info({ workerId: cluster.worker?.id }, "Worker started");
+  
+  // Check if this worker is the coordinator
+  if (logger.isCoordinator()) {
+    logger.info("This worker is the coordinator (handles archiving/retention)");
+  }
   
   // ... handle requests
 }
@@ -627,9 +646,9 @@ if (cluster.isPrimary) {
 When rotation is triggered, the logger uses an atomic `mkdir`-based lock to coordinate between workers:
 
 1. **Lock acquisition** — First worker to rotate acquires a `.rotation-lock` directory
-2. **Other workers wait** — Workers needing to rotate poll until lock is released (max ~1s)
+2. **Other workers wait** — Workers needing to rotate poll every 20ms until lock is released (max ~1s wait)
 3. **Coordinated switch** — After rotation, all workers converge on the same new file
-4. **Stale lock detection** — Locks older than 10s are considered stale (crashed process) and removed
+4. **Stale lock detection** — Locks older than 10s are considered stale (crashed process) and removed automatically
 
 This ensures only one overflow file is created per rotation event, even under high concurrency.
 
