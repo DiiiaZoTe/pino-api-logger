@@ -379,8 +379,10 @@ export class FileWriter {
 
     // Move pending writes to the main buffer (for the new file)
     for (const line of this.pendingWrites) {
+      const lineBytes = Buffer.byteLength(line, "utf8");
+      this.bytesWritten += lineBytes;
       this.buffer.push(line);
-      this.bufferBytes += Buffer.byteLength(line, "utf8");
+      this.bufferBytes += lineBytes;
     }
 
     // Clear pending
