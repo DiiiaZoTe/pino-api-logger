@@ -1,9 +1,12 @@
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import cron from "node-cron";
 import { DEFAULT_ARCHIVE_CRON } from "./config";
 import { isCoordinator } from "./registry";
 import type { ArchiveFrequency, LoggerWithArchiverOptions, ResolvedLoggerOptions } from "./types";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
  * Get the internal cron schedule based on archive frequency.

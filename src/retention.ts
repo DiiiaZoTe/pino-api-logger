@@ -1,10 +1,13 @@
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import cron from "node-cron";
 import { DEFAULT_RETENTION_CRON } from "./config";
 import { isCoordinator } from "./registry";
 import type { LoggerWithArchiverOptions, ResolvedLoggerOptions, RetentionUnit } from "./types";
 import { parseRetention } from "./utilities";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
  * Get the internal cron schedule based on retention unit.
