@@ -80,8 +80,8 @@ const logger = createLogger({
     rotationFrequency: "daily",   // "hourly" | "daily" (default: "daily")
     flushInterval: 200,           // Buffer flush interval in ms (default: 200, min: 20)
     maxBufferLines: 500,          // Max lines to buffer before flush (default: 500, min: 1)
-    maxBufferKilobytes: 1024,     // Max KB to buffer before flush (default: 1024)
-    maxLogSizeMegabytes: 100,     // Max log file size before overflow (default: 100MB)
+    maxBufferKilobytes: 1024,     // Max KB to buffer before flush (default: 1024, min: 1)
+    maxLogSizeMegabytes: 100,     // Max log file size before overflow (default: 100MB, min: 1)
   },
 
   // Console options

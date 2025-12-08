@@ -131,7 +131,7 @@ const loggerFactories: Record<string, LoggerFactory> = {
     try {
       require("node:fs").mkdirSync(`${BENCHMARK_LOG_DIR}-pino`, { recursive: true });
     } catch { }
-    const dest = pino.destination({ dest: logFile, sync: false });
+    const dest = pino.destination({ dest: logFile, sync: false, minLength: 4096 });
     return pino({ level: "info" }, dest);
   },
   "api-logger-default": () =>
