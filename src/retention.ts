@@ -1,13 +1,9 @@
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import cron from "node-cron";
 import { DEFAULT_RETENTION_CRON } from "./config";
 import { isCoordinator } from "./registry";
 import type { LoggerWithArchiverOptions, ResolvedLoggerOptions, RetentionUnit } from "./types";
-import { parseRetention } from "./utilities";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+import { parseRetention, resolveWorkerPath } from "./utilities";
 
 /**
  * Get the internal cron schedule based on retention unit.
@@ -23,8 +19,7 @@ export function runRetentionWorker(options: ResolvedLoggerOptions) {
   if (!isCoordinator(options.logDir)) {
     return; // Skip if not coordinator
   }
-  const workerPath = path.resolve(__dirname, "retention-worker.js");
-  new Worker(workerPath, { workerData: options });
+  new Worker(resolveWorkerPath('retention-worker.js'), { workerData: options });
 }
 
 /**

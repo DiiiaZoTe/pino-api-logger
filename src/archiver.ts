@@ -1,12 +1,9 @@
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import cron from "node-cron";
 import { DEFAULT_ARCHIVE_CRON } from "./config";
 import { isCoordinator } from "./registry";
 import type { ArchiveFrequency, LoggerWithArchiverOptions, ResolvedLoggerOptions } from "./types";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+import { resolveWorkerPath } from "./utilities";
 
 /**
  * Get the internal cron schedule based on archive frequency.
@@ -22,8 +19,7 @@ export function runArchiverWorker(options: ResolvedLoggerOptions) {
   if (!isCoordinator(options.logDir)) {
     return; // Skip if not coordinator
   }
-  const workerPath = path.resolve(__dirname, "archiver-worker.js");
-  new Worker(workerPath, { workerData: options });
+  new Worker(resolveWorkerPath('archiver-worker.js'), { workerData: options });
 }
 
 /**

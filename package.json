@@ -2,7 +2,7 @@
   "name": "pino-api-logger",
   "author": "DiiiaZoTe",
   "license": "MIT",
-  "version": "3.0.1",
+  "version": "3.0.2",
   "description": "Self-hosted server-side API logger with multi-stream writing (to console and file), daily rotation, buffered writes, and monthly archiving for Node/Bun projects.",
   "type": "module",
   "repository": {
@@ -14,6 +14,11 @@
   "files": [
     "dist"
   ],
+  "exports": {
+    ".": "./dist/index.js",
+    "./dist/archiver-worker.js": "./dist/archiver-worker.js",
+    "./dist/retention-worker.js": "./dist/retention-worker.js"
+  },
   "scripts": {
     "build": "bun run clean && bun run build:types && bun run build:compile",
     "build:compile": "bun build src/index.ts src/archiver-worker.ts src/retention-worker.ts --outdir dist --target node --packages=external",
@@ -50,6 +55,7 @@
     "typescript": "^5"
   },
   "dependencies": {
+    "import-meta-resolve": "^4.2.0",
     "node-cron": "^4.2.1",
     "pino": "^10.1.0",
     "pino-pretty": "^13.1.2",

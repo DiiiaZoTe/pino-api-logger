@@ -1,4 +1,8 @@
+import path from "node:path";
+import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { resolve } from "import-meta-resolve";
 import type {
   ArchiveFrequency,
   FileRotationFrequency,
@@ -6,6 +10,7 @@ import type {
   RetentionFormat,
   RetentionUnit,
 } from "./types";
+
 
 /**
  * Check if a file exists
@@ -292,4 +297,27 @@ export function getCutoffDate(now: Date, value: number, unit: RetentionUnit): Da
   }
 
   return cutoff;
+}
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+export function resolveWorkerPath(workerName: string): string {
+  // Development: check if worker exists relative to current file
+  const devPath = path.resolve(__dirname, workerName);
+  if (existsSync(devPath)) {
+    console.log('Using development worker path:', devPath);
+    return devPath;
+  }
+
+  // Production: resolve from package
+  try {
+    const workerPath = resolve(`pino-api-logger/dist/${workerName}`, import.meta.url);
+    console.log('Using production worker path:', workerPath);
+    return fileURLToPath(workerPath);
+  } catch {
+    // Fallback to relative path
+    console.log('Using fallback worker path:', devPath);
+    return devPath;
+  }
 }
