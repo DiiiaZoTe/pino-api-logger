@@ -302,18 +302,26 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export function resolveWorkerPath(workerName: string): string {
-  // Development: check if worker exists relative to current file
-  const devPath = path.resolve(__dirname, workerName);
+  // Production: try to resolve from package first
+  try {
+    const workerPath = resolve(`pino-api-logger/${workerName}`, import.meta.url);
+    const resolved = fileURLToPath(workerPath);
+    // Verify it exists
+    if (existsSync(resolved)) {
+      return resolved;
+    }
+  } catch {
+    // Package resolution failed, continue to dev fallback
+  }
+
+  // Development/fallback: check if worker exists relative to current file
+  const devPath = path.resolve(__dirname, `${workerName}.js`);
   if (existsSync(devPath)) {
     return devPath;
   }
 
-  // Production: resolve from package
-  try {
-    const workerPath = resolve(`pino-api-logger/${workerName}`, import.meta.url);
-    return fileURLToPath(workerPath);
-  } catch {
-    // Fallback to relative path
-    return devPath;
-  }
+  // Last resort: throw a helpful error
+  throw new Error(
+    `Cannot find worker "${workerName}". Tried package resolution and local path ${devPath}`,
+  );
 }

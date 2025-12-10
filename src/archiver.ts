@@ -1,6 +1,6 @@
 import { Worker } from "node:worker_threads";
 import cron from "node-cron";
-import { DEFAULT_ARCHIVE_CRON } from "./config";
+import { DEFAULT_ARCHIVE_CRON, DEFAULT_PACKAGE_NAME } from "./config";
 import { isCoordinator } from "./registry";
 import type { ArchiveFrequency, LoggerWithArchiverOptions, ResolvedLoggerOptions } from "./types";
 import { resolveWorkerPath } from "./utilities";
@@ -19,7 +19,13 @@ export function runArchiverWorker(options: ResolvedLoggerOptions) {
   if (!isCoordinator(options.logDir)) {
     return; // Skip if not coordinator
   }
-  new Worker(resolveWorkerPath("archiver-worker.js"), { workerData: options });
+  try {
+    new Worker(resolveWorkerPath("archiver-worker"), { workerData: options });
+  } catch (error) {
+    console.error(
+      `[${DEFAULT_PACKAGE_NAME}] Failed to run archiver worker, skipping to fail silently: ${(error as Error).message || error || "Unknown error"}`,
+    );
+  }
 }
 
 /**

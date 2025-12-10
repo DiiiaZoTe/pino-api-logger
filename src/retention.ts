@@ -1,6 +1,6 @@
 import { Worker } from "node:worker_threads";
 import cron from "node-cron";
-import { DEFAULT_RETENTION_CRON } from "./config";
+import { DEFAULT_PACKAGE_NAME, DEFAULT_RETENTION_CRON } from "./config";
 import { isCoordinator } from "./registry";
 import type { LoggerWithArchiverOptions, ResolvedLoggerOptions, RetentionUnit } from "./types";
 import { parseRetention, resolveWorkerPath } from "./utilities";
@@ -19,7 +19,13 @@ export function runRetentionWorker(options: ResolvedLoggerOptions) {
   if (!isCoordinator(options.logDir)) {
     return; // Skip if not coordinator
   }
-  new Worker(resolveWorkerPath("retention-worker.js"), { workerData: options });
+  try {
+    new Worker(resolveWorkerPath("retention-worker"), { workerData: options });
+  } catch (error) {
+    console.error(
+      `[${DEFAULT_PACKAGE_NAME}] Failed to run retention worker, skipping to fail silently: ${(error as Error).message || error || "Unknown error"}`,
+    );
+  }
 }
 
 /**
