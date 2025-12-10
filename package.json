@@ -2,7 +2,7 @@
   "name": "pino-api-logger",
   "author": "DiiiaZoTe",
   "license": "MIT",
-  "version": "3.0.2",
+  "version": "3.0.3",
   "description": "Self-hosted server-side API logger with multi-stream writing (to console and file), daily rotation, buffered writes, and monthly archiving for Node/Bun projects.",
   "type": "module",
   "repository": {
