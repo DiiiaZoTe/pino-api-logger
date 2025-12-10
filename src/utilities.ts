@@ -306,18 +306,15 @@ export function resolveWorkerPath(workerName: string): string {
   // Development: check if worker exists relative to current file
   const devPath = path.resolve(__dirname, workerName);
   if (existsSync(devPath)) {
-    console.log('Using development worker path:', devPath);
     return devPath;
   }
 
   // Production: resolve from package
   try {
     const workerPath = resolve(`pino-api-logger/${workerName}`, import.meta.url);
-    console.log('Using production worker path:', workerPath);
     return fileURLToPath(workerPath);
   } catch {
     // Fallback to relative path
-    console.log('Using fallback worker path:', devPath);
     return devPath;
   }
 }
