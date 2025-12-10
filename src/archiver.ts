@@ -19,7 +19,7 @@ export function runArchiverWorker(options: ResolvedLoggerOptions) {
   if (!isCoordinator(options.logDir)) {
     return; // Skip if not coordinator
   }
-  new Worker(resolveWorkerPath('archiver-worker.js'), { workerData: options });
+  new Worker(resolveWorkerPath("archiver-worker.js"), { workerData: options });
 }
 
 /**

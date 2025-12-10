@@ -1,6 +1,6 @@
-import path from "node:path";
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolve } from "import-meta-resolve";
 import type {
@@ -10,7 +10,6 @@ import type {
   RetentionFormat,
   RetentionUnit,
 } from "./types";
-
 
 /**
  * Check if a file exists

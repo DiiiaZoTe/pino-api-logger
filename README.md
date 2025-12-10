@@ -637,6 +637,10 @@ For extremely high-throughput workloads, consider:
 - Using a centralized logging service (e.g., Datadog, Elasticsearch, CloudWatch)
 - Implementing a dedicated log aggregation layer
 
+### Worker Path Resolution
+
+**Note:** Worker path resolution is currently in the works and can be tricky when bundling your app. The logger uses worker threads (`archiver-worker.js` and `retention-worker.js`) for archiving and retention operations. When using bundlers (e.g., webpack, esbuild, rollup), the worker file paths may not resolve correctly due to how bundlers restructure the codebase. If you encounter issues with worker path resolution in a bundled environment, you may need to configure your bundler to properly handle worker thread imports or exclude these worker files from bundling.
+
 ## Performance
 
 Based on our own benchmarks, the default file writer options (`file.flushInterval`, `file.maxBufferLines`, `file.maxBufferKilobytes`, `file.maxLogSizeMegabytes`) provide good performance overall for a normal size load and normal size usage. 

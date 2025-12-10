@@ -93,8 +93,8 @@ function validateConstraintHierarchy(
   if (!archiveDisabled && archiveHours < rotationHours) {
     throw new Error(
       `[${DEFAULT_PACKAGE_NAME}] Invalid configuration: archiveFrequency ("${archiveFrequency}") ` +
-      `must be >= fileRotationFrequency ("${fileRotationFrequency}"). ` +
-      `Cannot archive incomplete rotation periods.`,
+        `must be >= fileRotationFrequency ("${fileRotationFrequency}"). ` +
+        `Cannot archive incomplete rotation periods.`,
     );
   }
 
@@ -106,8 +106,8 @@ function validateConstraintHierarchy(
     if (!archiveDisabled && retentionHours < archiveHours) {
       throw new Error(
         `[${DEFAULT_PACKAGE_NAME}] Invalid configuration: logRetention ("${retentionPeriod}") ` +
-        `must be >= archiveFrequency ("${archiveFrequency}"). ` +
-        `Cannot delete files before they can be archived.`,
+          `must be >= archiveFrequency ("${archiveFrequency}"). ` +
+          `Cannot delete files before they can be archived.`,
       );
     }
 
@@ -115,8 +115,8 @@ function validateConstraintHierarchy(
     if (retentionHours < rotationHours) {
       throw new Error(
         `[${DEFAULT_PACKAGE_NAME}] Invalid configuration: logRetention ("${retentionPeriod}") ` +
-        `must be >= fileRotationFrequency ("${fileRotationFrequency}"). ` +
-        `Cannot delete files before rotation period ends.`,
+          `must be >= fileRotationFrequency ("${fileRotationFrequency}"). ` +
+          `Cannot delete files before rotation period ends.`,
       );
     }
 
@@ -125,7 +125,7 @@ function validateConstraintHierarchy(
     if (unit === "h" && fileRotationFrequency === "daily") {
       throw new Error(
         `[${DEFAULT_PACKAGE_NAME}] Invalid configuration: logRetention with hours ("${retentionPeriod}") ` +
-        `cannot be used with daily file rotation. Use "d" (days) or higher units.`,
+          `cannot be used with daily file rotation. Use "d" (days) or higher units.`,
       );
     }
   }
@@ -204,7 +204,7 @@ function validateLoggerOptions(options: LoggerOptions): ResolvedLoggerOptions {
     } catch {
       throw new Error(
         `[${DEFAULT_PACKAGE_NAME}] Invalid logRetention format: "${resolved.retention.period}". ` +
-        `Expected format: <number><unit> (e.g., "7d", "3m", "1y")`,
+          `Expected format: <number><unit> (e.g., "7d", "3m", "1y")`,
       );
     }
   }

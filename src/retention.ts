@@ -19,7 +19,7 @@ export function runRetentionWorker(options: ResolvedLoggerOptions) {
   if (!isCoordinator(options.logDir)) {
     return; // Skip if not coordinator
   }
-  new Worker(resolveWorkerPath('retention-worker.js'), { workerData: options });
+  new Worker(resolveWorkerPath("retention-worker.js"), { workerData: options });
 }
 
 /**
