@@ -16,8 +16,8 @@
   ],
   "exports": {
     ".": "./dist/index.js",
-    "./dist/archiver-worker.js": "./dist/archiver-worker.js",
-    "./dist/retention-worker.js": "./dist/retention-worker.js"
+    "./archiver-worker": "./dist/archiver-worker.js",
+    "./retention-worker": "./dist/retention-worker.js"
   },
   "scripts": {
     "build": "bun run clean && bun run build:types && bun run build:compile",

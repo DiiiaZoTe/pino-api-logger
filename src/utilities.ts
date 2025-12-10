@@ -312,7 +312,7 @@ export function resolveWorkerPath(workerName: string): string {
 
   // Production: resolve from package
   try {
-    const workerPath = resolve(`pino-api-logger/dist/${workerName}`, import.meta.url);
+    const workerPath = resolve(`pino-api-logger/${workerName}`, import.meta.url);
     console.log('Using production worker path:', workerPath);
     return fileURLToPath(workerPath);
   } catch {
